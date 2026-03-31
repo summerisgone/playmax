@@ -85,6 +85,7 @@ export async function analyze(): Promise<void> {
   if (!CHAT_ID) throw new Error("CHAT_ID env var is required");
 
   const MIN_NEW_MESSAGES = +(process.env.MIN_NEW_MESSAGES ?? 3);
+  const MAX_MESSAGES_TO_ANALYZE = 500;
   const systemPrompt = fs.readFileSync(
     path.join(process.cwd(), "ANALYZE.md"),
     "utf-8",
@@ -146,11 +147,16 @@ export async function analyze(): Promise<void> {
 
     const chatName = chatNameMap.get(chatId) ?? chatId;
     const chatUrl = chatUrlMap.get(chatId);
+
+    const limited =
+      messages.length > MAX_MESSAGES_TO_ANALYZE
+        ? messages.slice(messages.length - MAX_MESSAGES_TO_ANALYZE)
+        : messages;
     process.stderr.write(
-      `Analyzing ${chatId} (${chatName}): ${messages.length} new messages...\n`,
+      `Analyzing ${chatId} (${chatName}): ${limited.length}/${messages.length} new messages...\n`,
     );
 
-    const userPrompt = messages
+    const userPrompt = limited
       .map((m) => `[${m.date} ${m.time}] ${m.author}: ${m.text}`)
       .join("\n");
 

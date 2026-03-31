@@ -107,6 +107,8 @@ async function fetchChats(
 
 // --- message history ---
 
+const MAX_MESSAGES_PER_CHAT = 500;
+
 async function fetchHistory(
   page: Page,
   chatId: string,
@@ -137,6 +139,13 @@ async function fetchHistory(
 
     if (stopDate && oldestISO && oldestISO <= stopDate) {
       process.stderr.write(`[${chatId}] Reached stop date ${stopDate}.\n`);
+      break;
+    }
+
+    if (state.count >= MAX_MESSAGES_PER_CHAT) {
+      process.stderr.write(
+        `[${chatId}] Reached message limit ${MAX_MESSAGES_PER_CHAT}.\n`,
+      );
       break;
     }
 

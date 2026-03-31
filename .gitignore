@@ -1,4 +1,5 @@
 chrome-profile/*
 node_modules/*
+build/*
 .claude/*
 .env

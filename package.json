@@ -1,17 +1,13 @@
 {
   "name": "playmax",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "playwright test"
+    "browser": "bun browser.ts",
+    "list-chats": "bun list-chats.ts",
+    "read-history": "bun read-history.ts",
+    "test": "bunx playwright test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "devDependencies": {
-    "@playwright/test": "^1.58.2",
-    "tsx": "^4.21.0"
+    "@playwright/test": "^1.58.2"
   }
 }

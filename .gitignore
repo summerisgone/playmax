@@ -1,0 +1,4 @@
+chrome-profile/*
+node_modules/*
+.claude/*
+.env

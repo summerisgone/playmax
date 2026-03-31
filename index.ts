@@ -1,29 +1,22 @@
-import { login } from './login';
-import { listChats } from './list-chats';
-import { readHistory } from './read-history';
+import { login } from "./login";
+import { syncAll } from "./sync";
+import { analyze } from "./analyze";
 
-const [,, command, ...args] = process.argv;
+const [, , command] = process.argv;
 
 (async () => {
   switch (command) {
-    case 'login':
+    case "login":
       await login();
       break;
-    case 'list-chats':
-      await listChats();
+    case "sync":
+      await syncAll();
       break;
-    case 'read-history': {
-      const url = args[0];
-      if (!url) {
-        process.stderr.write('Usage: bun index.ts read-history <url> [limit]\n');
-        process.stderr.write('  limit: message count (number) or date cutoff (YYYY-MM-DD)\n');
-        process.exit(1);
-      }
-      await readHistory(url, args[1]);
+    case "analyze":
+      await analyze();
       break;
-    }
     default:
-      process.stderr.write('Usage: bun index.ts <login|list-chats|read-history> [...args]\n');
+      process.stderr.write("Usage: bun index.ts <login|sync|analyze>\n");
       process.exit(1);
   }
 })();

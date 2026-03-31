@@ -1,10 +1,12 @@
-import { Database } from 'bun:sqlite';
-import path from 'path';
+import { Database } from "bun:sqlite";
+import path from "path";
 
-const DB_PATH = path.join(process.cwd(), 'playmax.db');
+const DB_PATH = path.join(process.cwd(), "playmax.db");
 
-export const CHAT_LIST_TTL_MS = +(process.env.CHAT_LIST_TTL_MS ?? 86_400_000);    // 1 day
-export const CHAT_HISTORY_TTL_MS = +(process.env.CHAT_HISTORY_TTL_MS ?? 300_000); // 5 min
+export const CHAT_LIST_TTL_MS = +(process.env.CHAT_LIST_TTL_MS ?? 86_400_000); // 1 day
+export const CHAT_HISTORY_TTL_MS = +(
+  process.env.CHAT_HISTORY_TTL_MS ?? 300_000
+); // 5 min
 
 function openDb(): Database {
   const db = new Database(DB_PATH);
@@ -26,12 +28,15 @@ function openDb(): Database {
       UNIQUE(chat_id, date, time, text)
     );
   `);
-  // migrate existing tables that may lack added_at
+  // migrate existing tables that may lack columns
   for (const sql of [
-    'ALTER TABLE chats ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE messages ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE chats ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE messages ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE messages ADD COLUMN is_analyzed INTEGER NOT NULL DEFAULT 0",
   ]) {
-    try { db.exec(sql); } catch {}
+    try {
+      db.exec(sql);
+    } catch {}
   }
   return db;
 }
@@ -42,9 +47,12 @@ function nowSec(): number {
 
 export function isChatsStale(ttlMs: number): boolean {
   const db = openDb();
-  const row = db.query<{ maxAt: number | null }, []>(
-    'SELECT MAX(added_at) AS maxAt FROM chats'
-  ).get();
+  const row = db
+    .query<
+      { maxAt: number | null },
+      []
+    >("SELECT MAX(added_at) AS maxAt FROM chats")
+    .get();
   db.close();
   if (!row || row.maxAt === null || row.maxAt === 0) return true;
   return (nowSec() - row.maxAt) * 1000 > ttlMs;
@@ -52,9 +60,12 @@ export function isChatsStale(ttlMs: number): boolean {
 
 export function isChatHistoryStale(chatId: string, ttlMs: number): boolean {
   const db = openDb();
-  const row = db.query<{ maxAt: number | null }, [string]>(
-    'SELECT MAX(added_at) AS maxAt FROM messages WHERE chat_id = ?'
-  ).get(chatId);
+  const row = db
+    .query<
+      { maxAt: number | null },
+      [string]
+    >("SELECT MAX(added_at) AS maxAt FROM messages WHERE chat_id = ?")
+    .get(chatId);
   db.close();
   if (!row || row.maxAt === null || row.maxAt === 0) return true;
   return (nowSec() - row.maxAt) * 1000 > ttlMs;
@@ -62,28 +73,36 @@ export function isChatHistoryStale(chatId: string, ttlMs: number): boolean {
 
 export function getChats(): { id: string; name: string; url: string }[] {
   const db = openDb();
-  const rows = db.query<{ id: string; name: string; url: string }, []>(
-    'SELECT id, name, url FROM chats ORDER BY rowid'
-  ).all();
+  const rows = db
+    .query<
+      { id: string; name: string; url: string },
+      []
+    >("SELECT id, name, url FROM chats ORDER BY rowid")
+    .all();
   db.close();
   return rows;
 }
 
 export function getChatMessages(
-  chatId: string
+  chatId: string,
 ): { date: string; time: string; author: string; text: string }[] {
   const db = openDb();
-  const rows = db.query<{ date: string; time: string; author: string; text: string }, [string]>(
-    'SELECT date, time, author, text FROM messages WHERE chat_id = ? ORDER BY id'
-  ).all(chatId);
+  const rows = db
+    .query<
+      { date: string; time: string; author: string; text: string },
+      [string]
+    >("SELECT date, time, author, text FROM messages WHERE chat_id = ? ORDER BY id")
+    .all(chatId);
   db.close();
   return rows;
 }
 
-export function saveChats(chats: { id: string; name: string; url: string }[]): void {
+export function saveChats(
+  chats: { id: string; name: string; url: string }[],
+): void {
   const db = openDb();
   const stmt = db.prepare(
-    'INSERT OR REPLACE INTO chats (id, name, url, added_at) VALUES (?, ?, ?, ?)'
+    "INSERT OR REPLACE INTO chats (id, name, url, added_at) VALUES (?, ?, ?, ?)",
   );
   const now = nowSec();
   for (const c of chats) {
@@ -96,18 +115,66 @@ export function saveChats(chats: { id: string; name: string; url: string }[]): v
   db.close();
 }
 
+export function getUnanalyzedMessages(): {
+  chat_id: string;
+  date: string;
+  time: string;
+  author: string;
+  text: string;
+}[] {
+  const db = openDb();
+  const rows = db
+    .query<
+      {
+        chat_id: string;
+        date: string;
+        time: string;
+        author: string;
+        text: string;
+      },
+      []
+    >("SELECT chat_id, date, time, author, text FROM messages WHERE is_analyzed = 0 ORDER BY chat_id, id")
+    .all();
+  db.close();
+  return rows;
+}
+
+export function markAnalyzed(chatId: string): void {
+  const db = openDb();
+  db.prepare(
+    "UPDATE messages SET is_analyzed = 1 WHERE chat_id = ? AND is_analyzed = 0",
+  ).run(chatId);
+  db.close();
+}
+
+export function getEarliestMessageDate(chatId: string): string | null {
+  const db = openDb();
+  const row = db
+    .query<{ minDate: string | null }, [string]>(
+      "SELECT MIN(date) AS minDate FROM messages WHERE chat_id = ? AND date != ''",
+    )
+    .get(chatId);
+  db.close();
+  return row?.minDate ?? null;
+}
+
 export function saveMessages(
   chatId: string,
-  messages: { date: string | null; time: string; author: string; text: string }[]
+  messages: {
+    date: string | null;
+    time: string;
+    author: string;
+    text: string;
+  }[],
 ): void {
   const db = openDb();
   const stmt = db.prepare(
-    'INSERT OR IGNORE INTO messages (chat_id, date, time, author, text, added_at) VALUES (?, ?, ?, ?, ?, ?)'
+    "INSERT OR IGNORE INTO messages (chat_id, date, time, author, text, added_at) VALUES (?, ?, ?, ?, ?, ?)",
   );
   const now = nowSec();
   for (const m of messages) {
     try {
-      stmt.run(chatId, m.date ?? '', m.time, m.author, m.text, now);
+      stmt.run(chatId, m.date ?? "", m.time, m.author, m.text, now);
     } catch (e) {
       process.stderr.write(`DB error saving message: ${e}\n`);
     }

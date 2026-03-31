@@ -5,6 +5,7 @@
     "browser": "bun browser.ts",
     "list-chats": "bun list-chats.ts",
     "read-history": "bun read-history.ts",
+    "analyze": "bun analyze.ts",
     "start": "bun index.ts",
     "test": "bunx playwright test"
   },

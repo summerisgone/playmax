@@ -8,6 +8,7 @@ import {
   CHAT_LIST_TTL_MS,
   saveMessages,
   isChatHistoryStale,
+  markChatSynced,
   CHAT_HISTORY_TTL_MS,
   getEarliestMessageDate,
 } from "./db";
@@ -56,12 +57,13 @@ function parseRussianDate(raw: string | null): string | null {
 
 async function fetchChats(
   page: Page,
+  folderName: string,
 ): Promise<{ id: string; name: string; url: string }[]> {
   await page.goto("https://web.max.ru/");
   await page.waitForSelector(".item.svelte-174ybgs", { timeout: 30000 });
   const sferumBtn = page
     .locator(".item.svelte-174ybgs")
-    .filter({ hasText: "Сферум" })
+    .filter({ hasText: folderName })
     .first();
   await sferumBtn.click();
   await page.waitForSelector(".item.svelte-rg2upy h3 .name .text", {
@@ -221,6 +223,7 @@ async function fetchHistory(
 // --- sync entry point ---
 
 export async function syncAll(): Promise<void> {
+  const FOLDER_IN_MAX = process.env.FOLDER_IN_MAX ?? "Сферум";
   const context: BrowserContext = await chromium.launchPersistentContext(
     userDataDir,
     {
@@ -239,7 +242,7 @@ export async function syncAll(): Promise<void> {
     chats = getChats();
   } else {
     process.stderr.write("Fetching chat list...\n");
-    chats = await fetchChats(page);
+    chats = await fetchChats(page, FOLDER_IN_MAX);
     process.stderr.write(`Found ${chats.length} chats.\n`);
   }
 
@@ -252,6 +255,7 @@ export async function syncAll(): Promise<void> {
     const stopDate = getEarliestMessageDate(chat.id);
     if (stopDate) process.stderr.write(`[${chat.id}] Stop date: ${stopDate}\n`);
     await fetchHistory(page, chat.id, chat.url, stopDate);
+    markChatSynced(chat.id);
   }
 
   await context.close();

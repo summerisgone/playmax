@@ -31,6 +31,7 @@ function openDb(): Database {
   // migrate existing tables that may lack columns
   for (const sql of [
     "ALTER TABLE chats ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE chats ADD COLUMN synced_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE messages ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE messages ADD COLUMN is_analyzed INTEGER NOT NULL DEFAULT 0",
   ]) {
@@ -61,14 +62,22 @@ export function isChatsStale(ttlMs: number): boolean {
 export function isChatHistoryStale(chatId: string, ttlMs: number): boolean {
   const db = openDb();
   const row = db
-    .query<
-      { maxAt: number | null },
-      [string]
-    >("SELECT MAX(added_at) AS maxAt FROM messages WHERE chat_id = ?")
+    .query<{ syncedAt: number | null }, [string]>(
+      "SELECT synced_at AS syncedAt FROM chats WHERE id = ?",
+    )
     .get(chatId);
   db.close();
-  if (!row || row.maxAt === null || row.maxAt === 0) return true;
-  return (nowSec() - row.maxAt) * 1000 > ttlMs;
+  if (!row || row.syncedAt === null || row.syncedAt === 0) return true;
+  return (nowSec() - row.syncedAt) * 1000 > ttlMs;
+}
+
+export function markChatSynced(chatId: string): void {
+  const db = openDb();
+  db.prepare("UPDATE chats SET synced_at = ? WHERE id = ?").run(
+    nowSec(),
+    chatId,
+  );
+  db.close();
 }
 
 export function getChats(): { id: string; name: string; url: string }[] {
@@ -102,7 +111,7 @@ export function saveChats(
 ): void {
   const db = openDb();
   const stmt = db.prepare(
-    "INSERT OR REPLACE INTO chats (id, name, url, added_at) VALUES (?, ?, ?, ?)",
+    "INSERT INTO chats (id, name, url, added_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, added_at=excluded.added_at",
   );
   const now = nowSec();
   for (const c of chats) {
@@ -173,8 +182,9 @@ export function saveMessages(
   );
   const now = nowSec();
   for (const m of messages) {
+    if (!m.date || !m.text) continue;
     try {
-      stmt.run(chatId, m.date ?? "", m.time, m.author, m.text, now);
+      stmt.run(chatId, m.date, m.time, m.author, m.text, now);
     } catch (e) {
       process.stderr.write(`DB error saving message: ${e}\n`);
     }

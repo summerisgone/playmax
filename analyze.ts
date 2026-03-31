@@ -85,7 +85,7 @@ export async function analyze(): Promise<void> {
   const bot = new Bot(BOT_TOKEN);
 
   async function callLLM(userPrompt: string): Promise<string> {
-    const url = `${OPENAI_API_BASE_URL.replace(/\/$/, "")}/chat/completions`;
+    const url = `${OPENAI_API_BASE_URL!.replace(/\/$/, "")}/chat/completions`;
     const res = await fetch(url, {
       method: "POST",
       headers: {

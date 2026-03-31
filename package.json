@@ -2,15 +2,16 @@
   "name": "playmax",
   "version": "1.0.0",
   "scripts": {
-    "browser": "bun browser.ts",
-    "list-chats": "bun list-chats.ts",
-    "read-history": "bun read-history.ts",
-    "analyze": "bun analyze.ts",
     "start": "bun index.ts",
+    "login": "bun index.ts login",
+    "sync": "bun index.ts sync",
+    "analyze": "bun index.ts analyze",
+    "browser": "bun browser.ts",
     "test": "bunx playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2"
+    "@playwright/test": "^1.58.2",
+    "@types/bun": "^1.3.11"
   },
   "dependencies": {
     "grammy": "^1.41.1"

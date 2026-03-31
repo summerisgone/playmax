@@ -4,26 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Browser automation scripts for extracting chat history from https://web.max.ru/ (VK Max). Uses Playwright with a persistent Chrome profile to maintain login state.
+Scrapes school parent chat history from https://web.max.ru/ (VK Max), stores in SQLite, analyzes with LLM, sends digests to Telegram. Uses Playwright with persistent Chrome profile.
 
 ## Commands
 
 ```bash
-npx tsx browser.ts              # launch browser with remote debugging on :9222
-npx tsx list-chats.ts           # list all chats in the Sferum folder, outputs JSON
-npx tsx read-history.ts <url> [limit]  # extract chat history, outputs JSON
-npm test                        # run Playwright tests (tests/ dir is currently empty)
+bun index.ts login              # open browser, log in manually, Ctrl+C to save session
+bun index.ts sync               # fetch chat list + message history into SQLite
+bun index.ts analyze            # analyze new messages via LLM, send digest to Telegram
+bun browser.ts                  # launch browser with CDP on :9222 (for MCP debugging)
+bun test                        # run Playwright tests (tests/ dir is currently empty)
 ```
 
 ## Architecture
 
-Three standalone scripts, no shared modules:
+CLI entry point `index.ts` dispatches to three commands: `login`, `sync`, `analyze`.
 
-- **browser.ts** - starts a persistent Chromium context (profile in `./chrome-profile`) with CDP on port 9222; used to maintain a logged-in session for the other scripts
-- **list-chats.ts** - navigates to the target URL, intercepts `history.pushState` calls via page evaluation, collects chat names and URLs from the sidebar
-- **read-history.ts** - scrolls up through a chat to load messages, parses Russian date strings (e.g. "28 марта 2026"), stops at a count or date limit, outputs `{date, time, author, text}[]`
+- **login.ts** - opens persistent browser for manual login, saves session to `./chrome-profile`
+- **sync.ts** - fetches chat list from Sferum folder, scrolls through each chat to load history, saves to SQLite via `db.ts`. Uses TTL-based caching to skip fresh data.
+- **analyze.ts** - reads unanalyzed messages from DB, sends to OpenAI-compatible LLM with system prompt from `ANALYZE.md`, formats events and sends to Telegram via grammy
+- **db.ts** - SQLite layer (bun:sqlite): tables `chats` and `messages`, TTL helpers, migration logic
+- **browser.ts** - standalone: launches persistent Chromium with CDP on port 9222 for MCP debugging
 
-All scripts use `launchPersistentContext` with `./chrome-profile` so the login session persists across runs. The target UI is a Svelte app; selectors use `.svelte-*` class patterns and are fragile to UI changes.
+Selectors target a Svelte app; `.svelte-*` class patterns are fragile to UI changes.
 
 `.mcp.json` connects the chrome-devtools MCP server to the running browser on `localhost:9222`.
 

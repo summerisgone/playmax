@@ -36,13 +36,20 @@ interface LLMEvent {
   source?: string;
 }
 
-function formatEvents(chatName: string, events: LLMEvent[]): string {
+function formatEvents(
+  chatName: string,
+  events: LLMEvent[],
+  chatUrl?: string,
+): string {
   const sorted = [...events].sort((a, b) => {
     const order: Record<string, number> = { high: 0, medium: 1 };
     return (order[a.urgency] ?? 2) - (order[b.urgency] ?? 2);
   });
 
-  const lines: string[] = [`<b>\u{1F4CB} ${esc(chatName)}</b>\n`];
+  const header = chatUrl
+    ? `<b>\u{1F4CB} <a href="${esc(chatUrl)}">${esc(chatName)}</a></b>`
+    : `<b>\u{1F4CB} ${esc(chatName)}</b>`;
+  const lines: string[] = [`${header}\n`];
 
   for (const ev of sorted) {
     const cat = categoryIcon[ev.category] ?? "\u{2022}";
@@ -127,6 +134,7 @@ export async function analyze(): Promise<void> {
 
   const chats = getChats();
   const chatNameMap = new Map(chats.map((c) => [c.id, c.name]));
+  const chatUrlMap = new Map(chats.map((c) => [c.id, c.url]));
 
   for (const [chatId, messages] of byChatId) {
     if (messages.length < MIN_NEW_MESSAGES) {
@@ -137,6 +145,7 @@ export async function analyze(): Promise<void> {
     }
 
     const chatName = chatNameMap.get(chatId) ?? chatId;
+    const chatUrl = chatUrlMap.get(chatId);
     process.stderr.write(
       `Analyzing ${chatId} (${chatName}): ${messages.length} new messages...\n`,
     );
@@ -155,7 +164,7 @@ export async function analyze(): Promise<void> {
       const parsed = JSON.parse(jsonStr) as { events: LLMEvent[] };
 
       if (parsed.events.length > 0) {
-        const text = formatEvents(chatName, parsed.events);
+        const text = formatEvents(chatName, parsed.events, chatUrl);
         const result = await bot.api.sendMessage(CHAT_ID, text, {
           parse_mode: "HTML",
         });

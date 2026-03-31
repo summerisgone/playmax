@@ -1,0 +1,116 @@
+import { Database } from 'bun:sqlite';
+import path from 'path';
+
+const DB_PATH = path.join(process.cwd(), 'playmax.db');
+
+export const CHAT_LIST_TTL_MS = +(process.env.CHAT_LIST_TTL_MS ?? 86_400_000);    // 1 day
+export const CHAT_HISTORY_TTL_MS = +(process.env.CHAT_HISTORY_TTL_MS ?? 300_000); // 5 min
+
+function openDb(): Database {
+  const db = new Database(DB_PATH);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chats (
+      id       TEXT PRIMARY KEY,
+      name     TEXT NOT NULL,
+      url      TEXT NOT NULL,
+      added_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id  TEXT NOT NULL,
+      date     TEXT,
+      time     TEXT,
+      author   TEXT,
+      text     TEXT,
+      added_at INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(chat_id, date, time, text)
+    );
+  `);
+  // migrate existing tables that may lack added_at
+  for (const sql of [
+    'ALTER TABLE chats ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE messages ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0',
+  ]) {
+    try { db.exec(sql); } catch {}
+  }
+  return db;
+}
+
+function nowSec(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+export function isChatsStale(ttlMs: number): boolean {
+  const db = openDb();
+  const row = db.query<{ maxAt: number | null }, []>(
+    'SELECT MAX(added_at) AS maxAt FROM chats'
+  ).get();
+  db.close();
+  if (!row || row.maxAt === null || row.maxAt === 0) return true;
+  return (nowSec() - row.maxAt) * 1000 > ttlMs;
+}
+
+export function isChatHistoryStale(chatId: string, ttlMs: number): boolean {
+  const db = openDb();
+  const row = db.query<{ maxAt: number | null }, [string]>(
+    'SELECT MAX(added_at) AS maxAt FROM messages WHERE chat_id = ?'
+  ).get(chatId);
+  db.close();
+  if (!row || row.maxAt === null || row.maxAt === 0) return true;
+  return (nowSec() - row.maxAt) * 1000 > ttlMs;
+}
+
+export function getChats(): { id: string; name: string; url: string }[] {
+  const db = openDb();
+  const rows = db.query<{ id: string; name: string; url: string }, []>(
+    'SELECT id, name, url FROM chats ORDER BY rowid'
+  ).all();
+  db.close();
+  return rows;
+}
+
+export function getChatMessages(
+  chatId: string
+): { date: string; time: string; author: string; text: string }[] {
+  const db = openDb();
+  const rows = db.query<{ date: string; time: string; author: string; text: string }, [string]>(
+    'SELECT date, time, author, text FROM messages WHERE chat_id = ? ORDER BY id'
+  ).all(chatId);
+  db.close();
+  return rows;
+}
+
+export function saveChats(chats: { id: string; name: string; url: string }[]): void {
+  const db = openDb();
+  const stmt = db.prepare(
+    'INSERT OR REPLACE INTO chats (id, name, url, added_at) VALUES (?, ?, ?, ?)'
+  );
+  const now = nowSec();
+  for (const c of chats) {
+    try {
+      stmt.run(c.id, c.name, c.url, now);
+    } catch (e) {
+      process.stderr.write(`DB error saving chat ${c.id}: ${e}\n`);
+    }
+  }
+  db.close();
+}
+
+export function saveMessages(
+  chatId: string,
+  messages: { date: string | null; time: string; author: string; text: string }[]
+): void {
+  const db = openDb();
+  const stmt = db.prepare(
+    'INSERT OR IGNORE INTO messages (chat_id, date, time, author, text, added_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  const now = nowSec();
+  for (const m of messages) {
+    try {
+      stmt.run(chatId, m.date ?? '', m.time, m.author, m.text, now);
+    } catch (e) {
+      process.stderr.write(`DB error saving message: ${e}\n`);
+    }
+  }
+  db.close();
+}

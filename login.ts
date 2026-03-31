@@ -1,18 +1,18 @@
-import { chromium } from '@playwright/test';
-import path from 'path';
+import { chromium } from "@playwright/test";
+import path from "path";
 
-const userDataDir = path.join(__dirname, 'chrome-profile');
+const userDataDir = path.join(__dirname, "chrome-profile");
 
-(async () => {
+export async function login() {
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
-    channel: 'chrome',
+    channel: "chrome",
   });
 
-  const page = context.pages()[0] ?? await context.newPage();
-  await page.goto('https://web.max.ru/');
+  const page = context.pages()[0] ?? (await context.newPage());
+  await page.goto("https://web.max.ru/");
 
-  console.log('Log in, then press Ctrl+C to save the session and exit.');
+  console.log("Log in, then press Ctrl+C to save the session and exit.");
 
   await new Promise(() => {});
-})();
+}

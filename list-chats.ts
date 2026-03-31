@@ -1,9 +1,16 @@
 import { chromium } from '@playwright/test';
 import path from 'path';
+import { saveChats, isChatsStale, getChats, CHAT_LIST_TTL_MS } from './db';
 
 const userDataDir = path.join(__dirname, 'chrome-profile');
 
-(async () => {
+export async function listChats() {
+  if (!isChatsStale(CHAT_LIST_TTL_MS)) {
+    process.stderr.write('Using cached chat list (within TTL)\n');
+    console.log(JSON.stringify(getChats(), null, 2));
+    process.exit(0);
+  }
+
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     channel: 'chrome',
@@ -55,7 +62,8 @@ const userDataDir = path.join(__dirname, 'chrome-profile');
     return results;
   })()`).catch(e => { throw e; }) as any;
 
+  saveChats(chats);
   console.log(JSON.stringify(chats, null, 2));
 
   await context.close();
-})();
+}

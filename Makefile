@@ -1,5 +1,6 @@
 build:
-	bun build ./index.ts --compile --outfile build/playmax
+	bun build ./index.ts --compile --outfile build/playmax --external chromium-bidi \
+--external electron
 
 clean:
-	rm build/playmax
+	rm -rf  build

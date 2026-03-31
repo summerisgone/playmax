@@ -1,29 +1,8 @@
 import { chromium } from '@playwright/test';
 import path from 'path';
+import { saveMessages, isChatHistoryStale, getChatMessages, CHAT_HISTORY_TTL_MS } from './db';
 
 const userDataDir = path.join(__dirname, 'chrome-profile');
-const [,, url, limitArg] = process.argv;
-
-if (!url) {
-  process.stderr.write('Usage: npx tsx read-history.ts <url> [limit]\n');
-  process.stderr.write('  limit: message count (number) or date cutoff (YYYY-MM-DD)\n');
-  process.exit(1);
-}
-
-let messageLimit = Infinity;
-let dateLimit: Date | null = null;
-
-if (limitArg) {
-  if (/^\d+$/.test(limitArg)) {
-    messageLimit = parseInt(limitArg, 10);
-  } else {
-    dateLimit = new Date(limitArg);
-    if (isNaN(dateLimit.getTime())) {
-      process.stderr.write('Invalid limit: use a number or YYYY-MM-DD\n');
-      process.exit(1);
-    }
-  }
-}
 
 const MONTHS: Record<string, number> = {
   'января': 0, 'февраля': 1, 'марта': 2, 'апреля': 3,
@@ -39,7 +18,36 @@ function parseRuDate(s: string): Date | null {
   return new Date(+parts[2], month, +parts[0]);
 }
 
-(async () => {
+export async function readHistory(url: string, limitArg?: string) {
+  let messageLimit = Infinity;
+  let dateLimit: Date | null = null;
+
+  if (limitArg) {
+    if (/^\d+$/.test(limitArg)) {
+      messageLimit = parseInt(limitArg, 10);
+    } else {
+      dateLimit = new Date(limitArg);
+      if (isNaN(dateLimit.getTime())) {
+        process.stderr.write('Invalid limit: use a number or YYYY-MM-DD\n');
+        process.exit(1);
+      }
+    }
+  }
+
+  const chatId = url.replace('https://web.max.ru/', '');
+
+  if (!isChatHistoryStale(chatId, CHAT_HISTORY_TTL_MS)) {
+    process.stderr.write(`Using cached history for ${chatId} (within TTL)\n`);
+    let cached = getChatMessages(chatId);
+    if (dateLimit) {
+      const cutoff = dateLimit.toISOString().slice(0, 10);
+      cached = cached.filter(m => !m.date || m.date >= cutoff);
+    }
+    if (messageLimit < Infinity) cached = cached.slice(-messageLimit);
+    console.log(JSON.stringify(cached, null, 2));
+    return;
+  }
+
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     channel: 'chrome',
@@ -136,17 +144,16 @@ function parseRuDate(s: string): Date | null {
 
   let result: any[] = messages;
 
-  // filter by date cutoff (dates are now ISO YYYY-MM-DD strings)
   if (dateLimit) {
     const cutoff = dateLimit.toISOString().slice(0, 10);
     result = result.filter(m => !m.date || m.date >= cutoff);
   }
 
-  // take last N (most recent) if count limit
   if (messageLimit < Infinity) {
     result = result.slice(-messageLimit);
   }
 
+  saveMessages(chatId, result);
   console.log(JSON.stringify(result, null, 2));
   await context.close();
-})();
+}

@@ -10,7 +10,7 @@ import {
   isChatHistoryStale,
   markChatSynced,
   CHAT_HISTORY_TTL_MS,
-  getEarliestMessageDate,
+  getLatestMessageDate,
 } from "./db";
 
 const userDataDir = path.join(__dirname, "chrome-profile");
@@ -224,6 +224,16 @@ async function fetchHistory(
 
 export async function syncAll(): Promise<void> {
   const FOLDER_IN_MAX = process.env.FOLDER_IN_MAX ?? "Сферум";
+
+  // Early exit if everything is cached
+  if (!isChatsStale(CHAT_LIST_TTL_MS)) {
+    const cached = getChats();
+    if (cached.every((c) => !isChatHistoryStale(c.id, CHAT_HISTORY_TTL_MS))) {
+      process.stderr.write("All data fresh, skipping browser launch.\n");
+      return;
+    }
+  }
+
   const context: BrowserContext = await chromium.launchPersistentContext(
     userDataDir,
     {
@@ -252,7 +262,7 @@ export async function syncAll(): Promise<void> {
       continue;
     }
     process.stderr.write(`Syncing history: ${chat.name}\n`);
-    const stopDate = getEarliestMessageDate(chat.id);
+    const stopDate = getLatestMessageDate(chat.id);
     if (stopDate) process.stderr.write(`[${chat.id}] Stop date: ${stopDate}\n`);
     await fetchHistory(page, chat.id, chat.url, stopDate);
     markChatSynced(chat.id);

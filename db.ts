@@ -156,15 +156,15 @@ export function markAnalyzed(chatId: string): void {
   db.close();
 }
 
-export function getEarliestMessageDate(chatId: string): string | null {
+export function getLatestMessageDate(chatId: string): string | null {
   const db = openDb();
   const row = db
-    .query<{ minDate: string | null }, [string]>(
-      "SELECT MIN(date) AS minDate FROM messages WHERE chat_id = ? AND date != ''",
+    .query<{ maxDate: string | null }, [string]>(
+      "SELECT MAX(date) AS maxDate FROM messages WHERE chat_id = ? AND date != ''",
     )
     .get(chatId);
   db.close();
-  return row?.minDate ?? null;
+  return row?.maxDate ?? null;
 }
 
 export function saveMessages(

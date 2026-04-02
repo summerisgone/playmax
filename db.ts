@@ -39,6 +39,36 @@ function openDb(): Database {
       db.exec(sql);
     } catch {}
   }
+  // Migrate UNIQUE constraint from (chat_id, date, time, text) to (chat_id, date, text)
+  // so that time variations (e.g. read receipts appended to time field) don't create
+  // duplicate rows that reset is_analyzed to 0.
+  const hasNewIndex = db
+    .query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_unique'",
+    )
+    .get();
+  if (!hasNewIndex) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE messages_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id     TEXT NOT NULL,
+        date        TEXT,
+        time        TEXT,
+        author      TEXT,
+        text        TEXT,
+        added_at    INTEGER NOT NULL DEFAULT 0,
+        is_analyzed INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(chat_id, date, text)
+      );
+      INSERT OR IGNORE INTO messages_new (id, chat_id, date, time, author, text, added_at, is_analyzed)
+        SELECT id, chat_id, date, time, author, text, added_at, is_analyzed FROM messages;
+      DROP TABLE messages;
+      ALTER TABLE messages_new RENAME TO messages;
+      CREATE INDEX idx_messages_unique ON messages(chat_id, date, text);
+      COMMIT;
+    `);
+  }
   return db;
 }
 
@@ -177,8 +207,15 @@ export function saveMessages(
   }[],
 ): void {
   const db = openDb();
+  // ON CONFLICT: update time/author/added_at but never is_analyzed,
+  // so re-syncing already-analyzed messages doesn't reset their status.
   const stmt = db.prepare(
-    "INSERT OR IGNORE INTO messages (chat_id, date, time, author, text, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+    `INSERT INTO messages (chat_id, date, time, author, text, added_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(chat_id, date, text) DO UPDATE SET
+       time     = excluded.time,
+       author   = excluded.author,
+       added_at = excluded.added_at`,
   );
   const now = nowSec();
   for (const m of messages) {

@@ -237,7 +237,7 @@ export async function syncAll(): Promise<void> {
   const context: BrowserContext = await chromium.launchPersistentContext(
     userDataDir,
     {
-      headless: false,
+      headless: true,
       channel: "chrome",
       args: ["--remote-debugging-port=9222"],
     },

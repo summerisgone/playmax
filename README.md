@@ -104,16 +104,18 @@ make docker-analyze
 На машине разработки:
 
 ```bash
-docker build -t playmax:latest .
-docker save playmax:latest | gzip > playmax-image.tar.gz
+DOCKER_PLATFORM=linux/amd64 make docker-build
+docker save playmax:latest | gzip > playmax-image-linux-amd64.tar.gz
 ```
 
 На сервере:
 
 ```bash
 mkdir -p /opt/playmax/state
-gunzip -c playmax-image.tar.gz | docker load
+gunzip -c playmax-image-linux-amd64.tar.gz | docker load
 ```
+
+Если сервер `x86_64`, образ тоже должен быть `linux/amd64`. Если собрать image на Apple Silicon без `--platform linux/amd64`, получится `linux/arm64`-образ, и на обычном Linux-сервере Docker запустит его через эмуляцию. Для Playwright Chromium это часто заканчивается падением браузера на старте. Предупреждение вида `requested image's platform (linux/arm64) does not match ... (linux/amd64)` означает, что артефакт собран не под ту архитектуру.
 
 Перенесите в `/opt/playmax/state` файлы и каталоги:
 

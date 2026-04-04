@@ -49,7 +49,12 @@ export function getPersistentContextOptions(
   const args = [...(overrides.args ?? [])];
 
   if (process.env.PLAYWRIGHT_IN_DOCKER === "1") {
-    args.push("--no-sandbox", "--disable-dev-shm-usage");
+    args.push(
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+    );
   }
 
   return {

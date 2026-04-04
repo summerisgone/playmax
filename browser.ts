@@ -1,19 +1,24 @@
-import { chromium } from '@playwright/test';
-import path from 'path';
-
-const userDataDir = path.join(__dirname, 'chrome-profile');
+import { chromium } from "@playwright/test";
+import {
+  cleanupStaleChromeProfileLocks,
+  getPersistentContextOptions,
+  USER_DATA_DIR,
+} from "./runtime";
 
 (async () => {
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    channel: 'chrome',
-    args: ['--remote-debugging-port=9222'],
-  });
+  cleanupStaleChromeProfileLocks(USER_DATA_DIR);
+  const context = await chromium.launchPersistentContext(
+    USER_DATA_DIR,
+    getPersistentContextOptions({
+      headless: false,
+      args: ["--remote-debugging-port=9222"],
+    }),
+  );
 
-  const page = context.pages()[0] ?? await context.newPage();
-  await page.goto('about:blank');
+  const page = context.pages()[0] ?? (await context.newPage());
+  await page.goto("about:blank");
 
-  console.log('Browser is open. Press Ctrl+C to exit.');
+  console.log("Browser is open. Press Ctrl+C to exit.");
 
   // keep process alive
   await new Promise(() => {});

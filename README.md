@@ -5,13 +5,23 @@
 ## Требования
 
 - [Bun](https://bun.sh/) >= 1.0
-- Google Chrome (Playwright использует установленный браузер)
+- [Docker](https://www.docker.com/) для периодических запусков `sync` и `analyze`
+- Для первого входа не нужен системный Chrome: достаточно установить Playwright Chromium
 
 ## Установка
 
 ```bash
 bun install
+bunx playwright install chromium
 ```
+
+Создать браузерный профиль:
+
+```bash
+bun index.ts login
+```
+
+На macOS локальный `login` автоматически использует установленный `Google Chrome`, если он найден. Это обход проблемы, при которой bundled `Chrome for Testing` может падать при старте. Docker-запуски `sync` и `analyze` по-прежнему используют Chromium внутри контейнера и не требуют браузера на хосте.
 
 ## Настройка
 
@@ -38,9 +48,9 @@ CHAT_ID=123456789
 
 ## Использование
 
-### 1. Авторизация
+### 1. Первый запуск: авторизация и профиль браузера
 
-Откройте браузер и залогиньтесь на web.max.ru вручную. Сессия сохранится в `./chrome-profile`.
+Откройте Playwright Chromium и залогиньтесь на `web.max.ru` вручную. Профиль сохранится в `./chrome-profile`.
 
 ```bash
 bun index.ts login
@@ -48,22 +58,117 @@ bun index.ts login
 
 После входа нажмите `Ctrl+C`.
 
-### 2. Синхронизация
+### 2. Первый `sync`: создание базы данных
 
-Загрузите список чатов из папки "Сферум" и историю сообщений в SQLite (`playmax.db`).
+База `playmax.db` создается автоматически при первом `sync` или `analyze`. После логина можно сразу переходить к контейнерному запуску: первый `make docker-sync` создаст базу, если файла еще нет.
+
+### 3. Периодические запуски в Docker
+
+Соберите stateless-образ. Код и Chromium живут внутри образа, а `.env`, `chrome-profile/` и `playmax.db` пробрасываются с хоста.
 
 ```bash
-bun index.ts sync
+make docker-build
 ```
 
-Скрипт:
-- Получает список чатов (кэшируется по TTL)
-- Для каждого чата скроллит историю вверх до ранее загруженных сообщений
-- Сохраняет сообщения в базу с дедупликацией
+Запуск синхронизации:
 
-### 3. Анализ
+```bash
+make docker-sync
+```
 
-Отправляет новые (неанализированные) сообщения в LLM, получает структурированные события, отправляет дайджест в Telegram.
+Запуск анализа:
+
+```bash
+make docker-analyze
+```
+
+Контейнер запускается с `--rm`, поэтому остается stateless: все состояние сохраняется только в примонтированном каталоге проекта.
+
+## Deployment
+
+### Стратегия
+
+Артефакты деплоя:
+- Docker image с кодом приложения и headless Chromium
+- `chrome-profile/` с уже авторизованной сессией `web.max.ru`
+- `playmax.db` с накопленной историей и флагами `is_analyzed`
+- `.env` с ключами LLM и Telegram
+
+Рекомендуемая схема:
+- image считать immutable-артефактом и публиковать в registry или переносить через `docker save`
+- `chrome-profile/`, `playmax.db` и `.env` хранить в отдельном каталоге состояния, например `/opt/playmax/state`
+- контейнер запускать только через `docker run --rm`, без записи внутрь образа
+
+### Сборка и перенос
+
+На машине разработки:
+
+```bash
+docker build -t playmax:latest .
+docker save playmax:latest | gzip > playmax-image.tar.gz
+```
+
+На сервере:
+
+```bash
+mkdir -p /opt/playmax/state
+gunzip -c playmax-image.tar.gz | docker load
+```
+
+Перенесите в `/opt/playmax/state` файлы и каталоги:
+
+```bash
+.env
+playmax.db
+chrome-profile/
+```
+
+### Ручной запуск на сервере
+
+Синхронизация:
+
+```bash
+docker run --rm --init \
+  --env-file /opt/playmax/state/.env \
+  -e PLAYMAX_STATE_DIR=/state \
+  -v /opt/playmax/state:/state \
+  playmax:latest bun run sync
+```
+
+Анализ:
+
+```bash
+docker run --rm --init \
+  --env-file /opt/playmax/state/.env \
+  -e PLAYMAX_STATE_DIR=/state \
+  -v /opt/playmax/state:/state \
+  playmax:latest bun run analyze
+```
+
+### Пример crontab
+
+Ниже пример для Linux-хоста, где `sync` запускается каждые 30 минут, а `analyze` через 5 минут после него. `flock` не дает задачам пересекаться.
+
+```cron
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+*/30 * * * * flock -n /tmp/playmax-sync.lock docker run --rm --init --env-file /opt/playmax/state/.env -e PLAYMAX_STATE_DIR=/state -v /opt/playmax/state:/state playmax:latest bun run sync >> /var/log/playmax-sync.log 2>&1
+5,35 * * * * flock -n /tmp/playmax-analyze.lock docker run --rm --init --env-file /opt/playmax/state/.env -e PLAYMAX_STATE_DIR=/state -v /opt/playmax/state:/state playmax:latest bun run analyze >> /var/log/playmax-analyze.log 2>&1
+```
+
+Если image публикуется в registry, перед обновлением достаточно выполнить `docker pull <registry>/playmax:<tag>` и затем продолжать те же cron-запуски с новым тегом.
+
+### 4. Что делают команды
+
+`sync`:
+- Получает список чатов из папки `Сферум` с учетом TTL-кэша
+- Догружает историю сообщений и сохраняет ее в `playmax.db`
+
+`analyze`:
+- Берет новые сообщения из базы
+- Отправляет их в LLM
+- Публикует дайджест в Telegram
 
 ```bash
 bun index.ts analyze
@@ -87,10 +192,12 @@ login.ts          - Авторизация через persistent browser
 sync.ts           - Загрузка чатов и сообщений
 analyze.ts        - LLM-анализ + отправка в Telegram
 db.ts             - SQLite слой (bun:sqlite)
+runtime.ts        - Пути состояния и общие Playwright-настройки
 browser.ts        - Standalone браузер для отладки
 ANALYZE.md        - Системный промпт для LLM
 .mcp.json         - Конфигурация chrome-devtools MCP
 playwright.config.ts - Конфигурация Playwright (тесты)
+Dockerfile        - Образ для headless sync/analyze
 ```
 
 ## База данных

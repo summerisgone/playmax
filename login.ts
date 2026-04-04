@@ -1,13 +1,18 @@
 import { chromium } from "@playwright/test";
-import path from "path";
-
-const userDataDir = path.join(__dirname, "chrome-profile");
+import {
+  cleanupStaleChromeProfileLocks,
+  getPersistentContextOptions,
+  USER_DATA_DIR,
+} from "./runtime";
 
 export async function login() {
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    channel: "chrome",
-  });
+  cleanupStaleChromeProfileLocks(USER_DATA_DIR);
+  const context = await chromium.launchPersistentContext(
+    USER_DATA_DIR,
+    getPersistentContextOptions({
+      headless: false,
+    }),
+  );
 
   const page = context.pages()[0] ?? (await context.newPage());
   await page.goto("https://web.max.ru/");

@@ -1,7 +1,5 @@
 import { Database } from "bun:sqlite";
-import path from "path";
-
-const DB_PATH = path.join(process.cwd(), "playmax.db");
+import { DB_PATH } from "./runtime";
 
 export const CHAT_LIST_TTL_MS = +(process.env.CHAT_LIST_TTL_MS ?? 86_400_000); // 1 day
 export const CHAT_HISTORY_TTL_MS = +(

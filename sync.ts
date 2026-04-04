@@ -1,6 +1,5 @@
 import { chromium } from "@playwright/test";
 import type { BrowserContext, Page } from "@playwright/test";
-import path from "path";
 import {
   saveChats,
   isChatsStale,
@@ -12,8 +11,11 @@ import {
   CHAT_HISTORY_TTL_MS,
   getLatestMessageDate,
 } from "./db";
-
-const userDataDir = path.join(__dirname, "chrome-profile");
+import {
+  cleanupStaleChromeProfileLocks,
+  getPersistentContextOptions,
+  USER_DATA_DIR,
+} from "./runtime";
 
 const MONTHS: Record<string, number> = {
   января: 0,
@@ -234,13 +236,12 @@ export async function syncAll(): Promise<void> {
     }
   }
 
+  cleanupStaleChromeProfileLocks(USER_DATA_DIR);
   const context: BrowserContext = await chromium.launchPersistentContext(
-    userDataDir,
-    {
+    USER_DATA_DIR,
+    getPersistentContextOptions({
       headless: true,
-      channel: "chrome",
-      args: ["--remote-debugging-port=9222"],
-    },
+    }),
   );
 
   const page = context.pages()[0] ?? (await context.newPage());

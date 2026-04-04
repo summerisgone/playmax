@@ -1,0 +1,11 @@
+.git
+.gitignore
+.claude
+.DS_Store
+.env
+node_modules
+build
+chrome-profile
+playmax.db
+playmax.db-journal
+playmax.db.bak

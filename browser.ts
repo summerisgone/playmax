@@ -1,13 +1,14 @@
 import { chromium } from "@playwright/test";
-import type {
-  BrowserContext,
-  LaunchPersistentContextOptions,
-} from "@playwright/test";
+import type { BrowserContext } from "@playwright/test";
 import {
   cleanupStaleChromeProfileLocks,
   getPersistentContextOptions,
   USER_DATA_DIR,
 } from "./runtime";
+
+type LaunchPersistentContextOptions = Parameters<
+  typeof chromium.launchPersistentContext
+>[1];
 
 export async function launchBrowser(
   overrides: LaunchPersistentContextOptions = {},

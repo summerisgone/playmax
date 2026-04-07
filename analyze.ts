@@ -200,8 +200,8 @@ export async function analyze(): Promise<void> {
         process.stderr.write(`No important events found in ${chatId}.\n`);
       }
 
-      markAnalyzed(chatId);
-      process.stderr.write(`Marked ${chatId} as analyzed.\n`);
+      markAnalyzed(limited.map((message) => message.id));
+      process.stderr.write(`Marked ${limited.length} messages in ${chatId} as analyzed.\n`);
     } catch (e) {
       process.stderr.write(`Error analyzing ${chatId}: ${e}\n`);
       // Don't mark as analyzed - will retry next run

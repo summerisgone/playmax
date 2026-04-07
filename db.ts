@@ -6,6 +6,86 @@ export const CHAT_HISTORY_TTL_MS = +(
   process.env.CHAT_HISTORY_TTL_MS ?? 300_000
 ); // 5 min
 
+function getMessageContentKeySql(): string {
+  return "COALESCE(date, '') || '|' || COALESCE(time, '') || '|' || COALESCE(author, '') || '|' || COALESCE(text, '')";
+}
+
+export function buildMessageContentKey(
+  date: string | null,
+  time: string,
+  author: string,
+  text: string,
+): string {
+  return [date ?? "", time, author, text].join("|");
+}
+
+function normalizeMessageContentKeys(db: Database): void {
+  const needsNormalization = db
+    .query<{ needsNormalization: number }, []>(
+      `SELECT EXISTS(
+         SELECT 1
+         FROM messages
+         WHERE content_key != ${getMessageContentKeySql()}
+       ) AS needsNormalization`,
+    )
+    .get();
+
+  if (!needsNormalization?.needsNormalization) return;
+
+  db.exec(`
+    BEGIN;
+    CREATE TABLE messages_new (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id     TEXT NOT NULL,
+      date        TEXT,
+      time        TEXT,
+      author      TEXT,
+      text        TEXT,
+      content_key TEXT NOT NULL,
+      image_path  TEXT,
+      added_at    INTEGER NOT NULL DEFAULT 0,
+      is_analyzed INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(chat_id, content_key)
+    );
+    WITH normalized AS (
+      SELECT
+        chat_id,
+        ${getMessageContentKeySql()} AS canonical_key,
+        MAX(id) AS keep_id,
+        MAX(added_at) AS added_at,
+        MAX(is_analyzed) AS is_analyzed
+      FROM messages
+      GROUP BY chat_id, canonical_key
+    )
+    INSERT INTO messages_new (
+      chat_id,
+      date,
+      time,
+      author,
+      text,
+      content_key,
+      image_path,
+      added_at,
+      is_analyzed
+    )
+      SELECT
+        m.chat_id,
+        m.date,
+        m.time,
+        m.author,
+        m.text,
+        normalized.canonical_key,
+        m.image_path,
+        normalized.added_at,
+        normalized.is_analyzed
+      FROM normalized
+      JOIN messages m ON m.id = normalized.keep_id;
+    DROP TABLE messages;
+    ALTER TABLE messages_new RENAME TO messages;
+    COMMIT;
+  `);
+}
+
 function openDb(): Database {
   const db = new Database(DB_PATH);
   db.exec(`
@@ -98,6 +178,8 @@ function openDb(): Database {
       COMMIT;
     `);
   }
+
+  normalizeMessageContentKeys(db);
   return db;
 }
 
@@ -198,6 +280,7 @@ export function saveChats(
 }
 
 export function getUnanalyzedMessages(): {
+  id: number;
   chat_id: string;
   date: string;
   time: string;
@@ -209,6 +292,7 @@ export function getUnanalyzedMessages(): {
   const rows = db
     .query<
       {
+        id: number;
         chat_id: string;
         date: string;
         time: string;
@@ -218,18 +302,21 @@ export function getUnanalyzedMessages(): {
       },
       []
     >(
-      "SELECT chat_id, date, time, author, text, image_path FROM messages WHERE is_analyzed = 0 ORDER BY chat_id, id",
+      "SELECT id, chat_id, date, time, author, text, image_path FROM messages WHERE is_analyzed = 0 ORDER BY chat_id, id",
     )
     .all();
   db.close();
   return rows;
 }
 
-export function markAnalyzed(chatId: string): void {
+export function markAnalyzed(messageIds: number[]): void {
+  if (messageIds.length === 0) return;
+
   const db = openDb();
+  const placeholders = messageIds.map(() => "?").join(", ");
   db.prepare(
-    "UPDATE messages SET is_analyzed = 1 WHERE chat_id = ? AND is_analyzed = 0",
-  ).run(chatId);
+    `UPDATE messages SET is_analyzed = 1 WHERE id IN (${placeholders}) AND is_analyzed = 0`,
+  ).run(...messageIds);
   db.close();
 }
 
@@ -251,7 +338,6 @@ export function saveMessages(
     time: string;
     author: string;
     text: string;
-    contentKey: string;
     imagePath: string | null;
   }[],
 ): void {
@@ -272,13 +358,19 @@ export function saveMessages(
   for (const m of messages) {
     if (!m.date || (!m.text && !m.imagePath)) continue;
     try {
+      const contentKey = buildMessageContentKey(
+        m.date,
+        m.time,
+        m.author,
+        m.text,
+      );
       stmt.run(
         chatId,
         m.date,
         m.time,
         m.author,
         m.text,
-        m.contentKey,
+        contentKey,
         m.imagePath,
         now,
       );

@@ -171,7 +171,6 @@ async function fetchHistory(
     time: string;
     author: string;
     text: string;
-    contentKey: string;
     imagePath: string | null;
   }[] = [];
   let currentDate: string | null = null;
@@ -200,21 +199,11 @@ async function fetchHistory(
       item,
       block,
     );
-    const contentKey = buildContentKey(
-      chatId,
-      currentDate,
-      time,
-      author,
-      text,
-      imagePath,
-    );
-
     messages.push({
       date: currentDate,
       time,
       author,
       text,
-      contentKey,
       imagePath,
     });
   }
@@ -232,28 +221,6 @@ function normalizeMessageTime(raw: string): string {
   const compact = raw.replace(/\s+/g, " ").trim();
   const match = compact.match(/\b\d{1,2}:\d{2}\b/);
   return match?.[0] ?? compact;
-}
-
-function buildContentKey(
-  chatId: string,
-  date: string | null,
-  time: string,
-  author: string,
-  text: string,
-  imagePath: string | null,
-): string {
-  return createHash("sha1")
-    .update(
-      JSON.stringify({
-        chatId,
-        date: date ?? "",
-        time,
-        author,
-        text,
-        imagePath: imagePath ?? "",
-      }),
-    )
-    .digest("hex");
 }
 
 async function saveMessageImage(
@@ -328,9 +295,10 @@ async function downloadOriginalMessageImage(
     const downloadButton = page.locator('button[aria-label="Скачать"]').last();
     await downloadButton.waitFor({ state: "visible", timeout: 5000 });
 
-    const downloadPromise = page.waitForEvent("download", { timeout: 15000 });
-    await downloadButton.click();
-    const download = await downloadPromise;
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 15000 }),
+      downloadButton.click(),
+    ]);
     return await saveDownload(download, fileHash);
   } catch (error) {
     process.stderr.write(`Image download fallback: ${error}\n`);

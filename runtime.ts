@@ -1,6 +1,10 @@
 import path from "path";
 import fs from "fs";
-import type { LaunchPersistentContextOptions } from "@playwright/test";
+import { chromium } from "@playwright/test";
+
+type LaunchPersistentContextOptions = Parameters<
+  typeof chromium.launchPersistentContext
+>[1];
 
 const DEFAULT_STATE_DIR = __dirname;
 const LOCAL_CHROME_PATHS =

@@ -1,0 +1,59 @@
+name: Build release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build standalone binary
+        run: make build
+
+      - name: Package release assets
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          cp build/playmax dist/playmax-linux-amd64
+          tar -C dist -czf dist/playmax-linux-amd64.tar.gz playmax-linux-amd64
+          sha256sum dist/playmax-linux-amd64.tar.gz > dist/playmax-linux-amd64.tar.gz.sha256
+
+      - name: Create or update GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" \
+              dist/playmax-linux-amd64.tar.gz \
+              dist/playmax-linux-amd64.tar.gz.sha256 \
+              --clobber
+          else
+            gh release create "$TAG_NAME" \
+              dist/playmax-linux-amd64.tar.gz \
+              dist/playmax-linux-amd64.tar.gz.sha256 \
+              --generate-notes \
+              --title "$TAG_NAME"
+          fi

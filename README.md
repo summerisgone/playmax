@@ -161,6 +161,59 @@ PATH=/usr/local/bin:/usr/bin:/bin
 
 Если image публикуется в registry, перед обновлением достаточно выполнить `docker pull <registry>/playmax:<tag>` и затем продолжать те же cron-запуски с новым тегом.
 
+### Публикация в GitHub Container Registry
+
+В репозитории настроен workflow [`docker-publish.yml`](/Users/ivan/projects/temp/playmax/.github/workflows/docker-publish.yml), который собирает Docker image и публикует его в GHCR.
+
+Что делает workflow:
+- на `push` в `main` или `master` публикует теги ветки, SHA и `latest` для default branch
+- на git-теги вида `v*` публикует одноименный image tag
+- на `pull_request` только проверяет, что образ собирается, без публикации
+- по `workflow_dispatch` позволяет запустить сборку вручную
+
+Итоговый образ публикуется по адресу:
+
+```bash
+ghcr.io/<owner>/<repo>:latest
+```
+
+Примеры тегов:
+
+```bash
+ghcr.io/<owner>/<repo>:latest
+ghcr.io/<owner>/<repo>:main
+ghcr.io/<owner>/<repo>:sha-<commit>
+ghcr.io/<owner>/<repo>:v1.0.0
+```
+
+Для работы публикации:
+- Actions в репозитории должны быть включены
+- workflow использует встроенный `GITHUB_TOKEN`, дополнительных secrets для GHCR не требуется
+- у организации или пользователя должна быть разрешена публикация пакетов в GitHub Container Registry
+
+Проверить и скачать образ можно так:
+
+```bash
+docker pull ghcr.io/<owner>/<repo>:latest
+```
+
+### GitHub Release по тегу
+
+Workflow [`release.yml`](/Users/ivan/projects/temp/playmax/.github/workflows/release.yml) запускается при пуше git-тега вида `v*` и собирает standalone-бинарь для Linux `amd64`.
+
+Что попадает в релиз:
+- `playmax-linux-amd64.tar.gz`
+- `playmax-linux-amd64.tar.gz.sha256`
+
+Пример выпуска релиза:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+После этого GitHub Actions создаст или обновит GitHub Release с тегом `v1.0.0` и прикрепит собранные артефакты.
+
 ### 4. Что делают команды
 
 `sync`:

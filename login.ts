@@ -1,18 +1,9 @@
-import { chromium } from "@playwright/test";
-import {
-  cleanupStaleChromeProfileLocks,
-  getPersistentContextOptions,
-  USER_DATA_DIR,
-} from "./runtime";
+import { launchBrowser } from "./browser";
 
 export async function login() {
-  cleanupStaleChromeProfileLocks(USER_DATA_DIR);
-  const context = await chromium.launchPersistentContext(
-    USER_DATA_DIR,
-    getPersistentContextOptions({
-      headless: false,
-    }),
-  );
+  const context = await launchBrowser({
+    headless: false,
+  });
 
   const page = context.pages()[0] ?? (await context.newPage());
   await page.goto("https://web.max.ru/");

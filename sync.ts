@@ -1,5 +1,7 @@
-import { chromium } from "@playwright/test";
-import type { BrowserContext, Page } from "@playwright/test";
+import type { BrowserContext, Download, Locator, Page } from "@playwright/test";
+import fs from "fs";
+import path from "path";
+import { createHash } from "crypto";
 import {
   saveChats,
   isChatsStale,
@@ -11,11 +13,8 @@ import {
   CHAT_HISTORY_TTL_MS,
   getLatestMessageDate,
 } from "./db";
-import {
-  cleanupStaleChromeProfileLocks,
-  getPersistentContextOptions,
-  USER_DATA_DIR,
-} from "./runtime";
+import { MESSAGE_MEDIA_DIR } from "./runtime";
+import { launchBrowser } from "./browser";
 
 const MONTHS: Record<string, number> = {
   января: 0,
@@ -165,61 +164,207 @@ async function fetchHistory(
     }
   }
 
-  const messages = (await page.evaluate(`(() => {
-    const MONTHS = {
-      'января': 0, 'февраля': 1, 'марта': 2, 'апреля': 3,
-      'мая': 4, 'июня': 5, 'июля': 6, 'августа': 7,
-      'сентября': 8, 'октября': 9, 'ноября': 10, 'декабря': 11
-    };
-    function toISO(raw) {
-      if (!raw) return null;
-      const s = raw.trim();
-      const today = new Date();
-      let d;
-      if (s === 'Сегодня') {
-        d = today;
-      } else if (s === 'Вчера') {
-        d = new Date(today); d.setDate(d.getDate() - 1);
-      } else {
-        const parts = s.split(' ');
-        if (parts.length !== 3) return s;
-        const m = MONTHS[parts[1]];
-        if (m === undefined) return s;
-        d = new Date(+parts[2], m, +parts[0]);
-      }
-      const y = d.getFullYear();
-      const mo = String(d.getMonth() + 1).padStart(2, '0');
-      const da = String(d.getDate()).padStart(2, '0');
-      return y + '-' + mo + '-' + da;
-    }
-
-    const items = document.querySelectorAll('.history.svelte-3850xr .item');
-    const out = [];
-    let curDate = null;
-
-    for (const item of items) {
-      const cap = item.querySelector('.capsule');
-      if (cap) curDate = toISO(cap.textContent);
-
-      const block = item.querySelector('.block');
-      if (!block) continue;
-
-      const author = block.querySelector('.header .name .text')?.textContent?.trim() ?? '';
-      const text = block.querySelector('.bubble > span.text')?.textContent?.trim() ?? '';
-      const time = block.querySelector('.meta .text')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '';
-
-      out.push({ date: curDate, time, author, text });
-    }
-    return out;
-  })()`)) as {
+  const items = page.locator(".history.svelte-3850xr .item");
+  const itemCount = await items.count();
+  const messages: {
     date: string | null;
     time: string;
     author: string;
     text: string;
-  }[];
+    contentKey: string;
+    imagePath: string | null;
+  }[] = [];
+  let currentDate: string | null = null;
+
+  for (let i = 0; i < itemCount; i += 1) {
+    const item = items.nth(i);
+    const capsule = item.locator(".capsule").first();
+    if ((await capsule.count()) > 0) {
+      currentDate = parseRussianDate(await capsule.textContent());
+    }
+
+    const block = item.locator(".block").first();
+    if ((await block.count()) === 0) continue;
+
+    const author = await getTextContent(block.locator(".header .name .text").first());
+    const text = await getTextContent(block.locator(".bubble > span.text").first());
+    const time = normalizeMessageTime(
+      await getTextContent(block.locator(".meta .text").first()),
+    );
+    const imagePath = await saveMessageImage(
+      chatId,
+      currentDate,
+      time,
+      author,
+      text,
+      item,
+      block,
+    );
+    const contentKey = buildContentKey(
+      chatId,
+      currentDate,
+      time,
+      author,
+      text,
+      imagePath,
+    );
+
+    messages.push({
+      date: currentDate,
+      time,
+      author,
+      text,
+      contentKey,
+      imagePath,
+    });
+  }
 
   saveMessages(chatId, messages);
   process.stderr.write(`[${chatId}] Saved ${messages.length} messages.\n`);
+}
+
+async function getTextContent(locator: Locator): Promise<string> {
+  if ((await locator.count()) === 0) return "";
+  return (await locator.textContent())?.trim() ?? "";
+}
+
+function normalizeMessageTime(raw: string): string {
+  const compact = raw.replace(/\s+/g, " ").trim();
+  const match = compact.match(/\b\d{1,2}:\d{2}\b/);
+  return match?.[0] ?? compact;
+}
+
+function buildContentKey(
+  chatId: string,
+  date: string | null,
+  time: string,
+  author: string,
+  text: string,
+  imagePath: string | null,
+): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify({
+        chatId,
+        date: date ?? "",
+        time,
+        author,
+        text,
+        imagePath: imagePath ?? "",
+      }),
+    )
+    .digest("hex");
+}
+
+async function saveMessageImage(
+  chatId: string,
+  date: string | null,
+  time: string,
+  author: string,
+  text: string,
+  item: Locator,
+  block: Locator,
+): Promise<string | null> {
+  const image = block
+    .locator(".bubble .media img.image, .bubble .media img, .bubble img.image")
+    .first();
+  if ((await image.count()) === 0) return null;
+
+  const imageSrc = (await image.getAttribute("src")) ?? "";
+  const itemIndex = (await item.getAttribute("data-index")) ?? "";
+  const fileHash = createHash("sha1")
+    .update(
+      JSON.stringify({
+        chatId,
+        date: date ?? "",
+        time,
+        author,
+        text,
+        imageSrc,
+        itemIndex,
+      }),
+    )
+    .digest("hex");
+  const existing = findExistingMediaPath(fileHash);
+  if (existing) return existing;
+
+  fs.mkdirSync(MESSAGE_MEDIA_DIR, { recursive: true });
+
+  const downloaded = await downloadOriginalMessageImage(block, fileHash);
+  if (downloaded) return downloaded;
+
+  const fileName = `${fileHash}.png`;
+  const absPath = path.join(MESSAGE_MEDIA_DIR, fileName);
+  const relPath = path.posix.join("message-media", fileName);
+  await image.scrollIntoViewIfNeeded();
+  await image.screenshot({ path: absPath });
+  return relPath;
+}
+
+function findExistingMediaPath(fileHash: string): string | null {
+  try {
+    const entries = fs.readdirSync(MESSAGE_MEDIA_DIR);
+    const match = entries.find((entry) => entry.startsWith(`${fileHash}.`));
+    return match ? path.posix.join("message-media", match) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function downloadOriginalMessageImage(
+  block: Locator,
+  fileHash: string,
+): Promise<string | null> {
+  const page = block.page();
+  const mediaOpener = block
+    .locator(".bubble .media button.tile, .bubble .media button, .bubble .media img")
+    .first();
+  if ((await mediaOpener.count()) === 0) return null;
+
+  await mediaOpener.scrollIntoViewIfNeeded();
+  await mediaOpener.click();
+
+  try {
+    const downloadButton = page.locator('button[aria-label="Скачать"]').last();
+    await downloadButton.waitFor({ state: "visible", timeout: 5000 });
+
+    const downloadPromise = page.waitForEvent("download", { timeout: 15000 });
+    await downloadButton.click();
+    const download = await downloadPromise;
+    return await saveDownload(download, fileHash);
+  } catch (error) {
+    process.stderr.write(`Image download fallback: ${error}\n`);
+    return null;
+  } finally {
+    await closeMediaViewer(page);
+  }
+}
+
+async function saveDownload(
+  download: Download,
+  fileHash: string,
+): Promise<string | null> {
+  const suggested = download.suggestedFilename();
+  const ext = path.extname(suggested) || ".bin";
+  const fileName = `${fileHash}${ext}`;
+  const absPath = path.join(MESSAGE_MEDIA_DIR, fileName);
+  const relPath = path.posix.join("message-media", fileName);
+  await download.saveAs(absPath);
+  return relPath;
+}
+
+async function closeMediaViewer(page: Page): Promise<void> {
+  const closeButton = page.locator('button[aria-label="Закрыть"]').last();
+  if ((await closeButton.count()) > 0) {
+    try {
+      await closeButton.click({ timeout: 2000 });
+      return;
+    } catch {}
+  }
+
+  try {
+    await page.keyboard.press("Escape");
+  } catch {}
 }
 
 // --- sync entry point ---
@@ -236,13 +381,10 @@ export async function syncAll(): Promise<void> {
     }
   }
 
-  cleanupStaleChromeProfileLocks(USER_DATA_DIR);
-  const context: BrowserContext = await chromium.launchPersistentContext(
-    USER_DATA_DIR,
-    getPersistentContextOptions({
-      headless: true,
-    }),
-  );
+  const context: BrowserContext = await launchBrowser({
+    headless: true,
+    acceptDownloads: true,
+  });
 
   const page = context.pages()[0] ?? (await context.newPage());
 

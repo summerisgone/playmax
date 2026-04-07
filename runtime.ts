@@ -16,6 +16,7 @@ export const STATE_DIR = path.resolve(
 );
 export const USER_DATA_DIR = path.join(STATE_DIR, "chrome-profile");
 export const DB_PATH = path.join(STATE_DIR, "playmax.db");
+export const MESSAGE_MEDIA_DIR = path.join(STATE_DIR, "message-media");
 
 const CHROME_SINGLETON_FILES = [
   "SingletonLock",

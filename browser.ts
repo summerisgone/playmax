@@ -1,19 +1,29 @@
 import { chromium } from "@playwright/test";
+import type {
+  BrowserContext,
+  LaunchPersistentContextOptions,
+} from "@playwright/test";
 import {
   cleanupStaleChromeProfileLocks,
   getPersistentContextOptions,
   USER_DATA_DIR,
 } from "./runtime";
 
-(async () => {
+export async function launchBrowser(
+  overrides: LaunchPersistentContextOptions = {},
+): Promise<BrowserContext> {
   cleanupStaleChromeProfileLocks(USER_DATA_DIR);
-  const context = await chromium.launchPersistentContext(
+  return chromium.launchPersistentContext(
     USER_DATA_DIR,
-    getPersistentContextOptions({
-      headless: false,
-      args: ["--remote-debugging-port=9222"],
-    }),
+    getPersistentContextOptions(overrides),
   );
+}
+
+async function main(): Promise<void> {
+  const context = await launchBrowser({
+    headless: false,
+    args: ["--remote-debugging-port=9222"],
+  });
 
   const page = context.pages()[0] ?? (await context.newPage());
   await page.goto("about:blank");
@@ -22,4 +32,8 @@ import {
 
   // keep process alive
   await new Promise(() => {});
-})();
+}
+
+if (import.meta.main) {
+  await main();
+}

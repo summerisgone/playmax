@@ -1,5 +1,6 @@
 chrome-profile/
 node_modules/
+message-media/
 build/
 .claude/
 .env

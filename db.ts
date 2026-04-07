@@ -22,8 +22,11 @@ function openDb(): Database {
       time     TEXT,
       author   TEXT,
       text     TEXT,
+      content_key TEXT NOT NULL DEFAULT '',
+      image_path  TEXT,
       added_at INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(chat_id, date, time, text)
+      is_analyzed INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(chat_id, content_key)
     );
   `);
   // migrate existing tables that may lack columns
@@ -32,20 +35,25 @@ function openDb(): Database {
     "ALTER TABLE chats ADD COLUMN synced_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE messages ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE messages ADD COLUMN is_analyzed INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE messages ADD COLUMN image_path TEXT",
+    "ALTER TABLE messages ADD COLUMN content_key TEXT NOT NULL DEFAULT ''",
   ]) {
     try {
       db.exec(sql);
     } catch {}
   }
-  // Migrate UNIQUE constraint from (chat_id, date, time, text) to (chat_id, date, text)
-  // so that time variations (e.g. read receipts appended to time field) don't create
-  // duplicate rows that reset is_analyzed to 0.
-  const hasNewIndex = db
-    .query<{ name: string }, []>(
-      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_unique'",
+
+  const tableRow = db
+    .query<{ sql: string | null }, []>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
     )
     .get();
-  if (!hasNewIndex) {
+  const tableSql = tableRow?.sql ?? "";
+
+  if (
+    !tableSql.includes("content_key") ||
+    !tableSql.includes("UNIQUE(chat_id, content_key)")
+  ) {
     db.exec(`
       BEGIN;
       CREATE TABLE messages_new (
@@ -55,15 +63,38 @@ function openDb(): Database {
         time        TEXT,
         author      TEXT,
         text        TEXT,
+        content_key TEXT NOT NULL,
+        image_path  TEXT,
         added_at    INTEGER NOT NULL DEFAULT 0,
         is_analyzed INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(chat_id, date, text)
+        UNIQUE(chat_id, content_key)
       );
-      INSERT OR IGNORE INTO messages_new (id, chat_id, date, time, author, text, added_at, is_analyzed)
-        SELECT id, chat_id, date, time, author, text, added_at, is_analyzed FROM messages;
+      INSERT OR IGNORE INTO messages_new (
+        id,
+        chat_id,
+        date,
+        time,
+        author,
+        text,
+        content_key,
+        image_path,
+        added_at,
+        is_analyzed
+      )
+        SELECT
+          id,
+          chat_id,
+          date,
+          time,
+          author,
+          text,
+          COALESCE(NULLIF(content_key, ''), COALESCE(date, '') || '|' || COALESCE(time, '') || '|' || COALESCE(author, '') || '|' || COALESCE(text, '')),
+          image_path,
+          added_at,
+          is_analyzed
+        FROM messages;
       DROP TABLE messages;
       ALTER TABLE messages_new RENAME TO messages;
-      CREATE INDEX idx_messages_unique ON messages(chat_id, date, text);
       COMMIT;
     `);
   }
@@ -122,13 +153,27 @@ export function getChats(): { id: string; name: string; url: string }[] {
 
 export function getChatMessages(
   chatId: string,
-): { date: string; time: string; author: string; text: string }[] {
+): {
+  date: string;
+  time: string;
+  author: string;
+  text: string;
+  image_path: string | null;
+}[] {
   const db = openDb();
   const rows = db
     .query<
-      { date: string; time: string; author: string; text: string },
+      {
+        date: string;
+        time: string;
+        author: string;
+        text: string;
+        image_path: string | null;
+      },
       [string]
-    >("SELECT date, time, author, text FROM messages WHERE chat_id = ? ORDER BY id")
+    >(
+      "SELECT date, time, author, text, image_path FROM messages WHERE chat_id = ? ORDER BY id",
+    )
     .all(chatId);
   db.close();
   return rows;
@@ -158,6 +203,7 @@ export function getUnanalyzedMessages(): {
   time: string;
   author: string;
   text: string;
+  image_path: string | null;
 }[] {
   const db = openDb();
   const rows = db
@@ -168,9 +214,12 @@ export function getUnanalyzedMessages(): {
         time: string;
         author: string;
         text: string;
+        image_path: string | null;
       },
       []
-    >("SELECT chat_id, date, time, author, text FROM messages WHERE is_analyzed = 0 ORDER BY chat_id, id")
+    >(
+      "SELECT chat_id, date, time, author, text, image_path FROM messages WHERE is_analyzed = 0 ORDER BY chat_id, id",
+    )
     .all();
   db.close();
   return rows;
@@ -202,24 +251,37 @@ export function saveMessages(
     time: string;
     author: string;
     text: string;
+    contentKey: string;
+    imagePath: string | null;
   }[],
 ): void {
   const db = openDb();
   // ON CONFLICT: update time/author/added_at but never is_analyzed,
   // so re-syncing already-analyzed messages doesn't reset their status.
   const stmt = db.prepare(
-    `INSERT INTO messages (chat_id, date, time, author, text, added_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(chat_id, date, text) DO UPDATE SET
+    `INSERT INTO messages (chat_id, date, time, author, text, content_key, image_path, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(chat_id, content_key) DO UPDATE SET
        time     = excluded.time,
        author   = excluded.author,
+       text     = excluded.text,
+       image_path = excluded.image_path,
        added_at = excluded.added_at`,
   );
   const now = nowSec();
   for (const m of messages) {
-    if (!m.date || !m.text) continue;
+    if (!m.date || (!m.text && !m.imagePath)) continue;
     try {
-      stmt.run(chatId, m.date, m.time, m.author, m.text, now);
+      stmt.run(
+        chatId,
+        m.date,
+        m.time,
+        m.author,
+        m.text,
+        m.contentKey,
+        m.imagePath,
+        now,
+      );
     } catch (e) {
       process.stderr.write(`DB error saving message: ${e}\n`);
     }

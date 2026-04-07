@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { Bot } from "grammy";
 import { getUnanalyzedMessages, markAnalyzed, getChats } from "./db";
+import { STATE_DIR } from "./runtime";
 
 // --- Telegram formatting ---
 
@@ -34,6 +35,21 @@ interface LLMEvent {
   source_quotes?: string[];
   url?: string;
   source?: string;
+}
+
+function getImageMimeType(imagePath: string): string {
+  const ext = path.extname(imagePath).toLowerCase();
+  switch (ext) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    default:
+      return "image/png";
+  }
 }
 
 function formatEvents(
@@ -92,7 +108,14 @@ export async function analyze(): Promise<void> {
   );
   const bot = new Bot(BOT_TOKEN);
 
-  async function callLLM(userPrompt: string): Promise<string> {
+  async function callLLM(
+    userContent:
+      | string
+      | Array<
+          | { type: "text"; text: string }
+          | { type: "image_url"; image_url: { url: string } }
+        >,
+  ): Promise<string> {
     const url = `${OPENAI_API_BASE_URL!.replace(/\/$/, "")}/chat/completions`;
     const res = await fetch(url, {
       method: "POST",
@@ -104,7 +127,7 @@ export async function analyze(): Promise<void> {
         model: OPENAI_API_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
+          { role: "user", content: userContent },
         ],
         temperature: 0.2,
       }),
@@ -156,12 +179,10 @@ export async function analyze(): Promise<void> {
       `Analyzing ${chatId} (${chatName}): ${limited.length}/${messages.length} new messages...\n`,
     );
 
-    const userPrompt = limited
-      .map((m) => `[${m.date} ${m.time}] ${m.author}: ${m.text}`)
-      .join("\n");
+    const userContent = buildUserContent(limited);
 
     try {
-      const raw = await callLLM(userPrompt);
+      const raw = await callLLM(userContent);
 
       const jsonStr = raw
         .replace(/^```json\s*/, "")
@@ -186,4 +207,50 @@ export async function analyze(): Promise<void> {
       // Don't mark as analyzed - will retry next run
     }
   }
+}
+
+function buildUserContent(
+  messages: ReturnType<typeof getUnanalyzedMessages>,
+):
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    > {
+  const imageParts: Array<
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } }
+  > = [];
+  const lines: string[] = [];
+  let imageIndex = 0;
+
+  for (const message of messages) {
+    const author = message.author || "Неизвестный автор";
+    const body = message.text || "[в сообщении есть изображение]";
+    const suffix = message.image_path ? ` [image ${imageIndex + 1}]` : "";
+    lines.push(`[${message.date} ${message.time}] ${author}: ${body}${suffix}`);
+
+    if (message.image_path) {
+      const absPath = path.join(STATE_DIR, message.image_path);
+      if (fs.existsSync(absPath)) {
+        const file = fs.readFileSync(absPath);
+        const mimeType = getImageMimeType(message.image_path);
+        imageIndex += 1;
+        imageParts.push({
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${file.toString("base64")}`,
+          },
+        });
+      } else {
+        lines.push(`[image_missing ${message.image_path}]`);
+      }
+    }
+  }
+
+  const prompt = lines.join("\n");
+  if (imageParts.length === 0) return prompt;
+
+  const textBlock = `${prompt}\n\nИзображения приложены ниже в порядке пометок [image N].`;
+  return [{ type: "text", text: textBlock }, ...imageParts];
 }

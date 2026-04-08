@@ -111,6 +111,9 @@ async function fetchChats(
 // --- message history ---
 
 const MAX_MESSAGES_PER_CHAT = 500;
+const MESSAGE_IMAGE_SELECTOR = ".bubble .media img.image";
+const MEDIA_OPENER_SELECTOR =
+  ".bubble .media button.tile, .bubble .media button, .bubble .media img.image";
 
 async function fetchHistory(
   page: Page,
@@ -217,6 +220,10 @@ async function getTextContent(locator: Locator): Promise<string> {
   return (await locator.textContent())?.trim() ?? "";
 }
 
+export function isSkippableMessageImageSrc(src: string): boolean {
+  return src.includes("/emojis/");
+}
+
 function normalizeMessageTime(raw: string): string {
   const compact = raw.replace(/\s+/g, " ").trim();
   const match = compact.match(/\b\d{1,2}:\d{2}\b/);
@@ -232,12 +239,11 @@ async function saveMessageImage(
   item: Locator,
   block: Locator,
 ): Promise<string | null> {
-  const image = block
-    .locator(".bubble .media img.image, .bubble .media img, .bubble img.image")
-    .first();
+  const image = block.locator(MESSAGE_IMAGE_SELECTOR).first();
   if ((await image.count()) === 0) return null;
 
   const imageSrc = (await image.getAttribute("src")) ?? "";
+  if (!imageSrc || isSkippableMessageImageSrc(imageSrc)) return null;
   const itemIndex = (await item.getAttribute("data-index")) ?? "";
   const fileHash = createHash("sha1")
     .update(
@@ -283,9 +289,7 @@ async function downloadOriginalMessageImage(
   fileHash: string,
 ): Promise<string | null> {
   const page = block.page();
-  const mediaOpener = block
-    .locator(".bubble .media button.tile, .bubble .media button, .bubble .media img")
-    .first();
+  const mediaOpener = block.locator(MEDIA_OPENER_SELECTOR).first();
   if ((await mediaOpener.count()) === 0) return null;
 
   await mediaOpener.scrollIntoViewIfNeeded();

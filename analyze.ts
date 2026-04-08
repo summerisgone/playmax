@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { Bot } from "grammy";
 import { getUnanalyzedMessages, markAnalyzed, getChats } from "./db";
+import { prepareImageForLlm } from "./llm-images";
 import { STATE_DIR } from "./runtime";
 
 // --- Telegram formatting ---
@@ -35,21 +36,6 @@ interface LLMEvent {
   source_quotes?: string[];
   url?: string;
   source?: string;
-}
-
-function getImageMimeType(imagePath: string): string {
-  const ext = path.extname(imagePath).toLowerCase();
-  switch (ext) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".webp":
-      return "image/webp";
-    case ".gif":
-      return "image/gif";
-    default:
-      return "image/png";
-  }
 }
 
 function formatEvents(
@@ -179,7 +165,7 @@ export async function analyze(): Promise<void> {
       `Analyzing ${chatId} (${chatName}): ${limited.length}/${messages.length} new messages...\n`,
     );
 
-    const userContent = buildUserContent(limited);
+    const userContent = await buildUserContent(limited);
 
     try {
       const raw = await callLLM(userContent);
@@ -209,14 +195,15 @@ export async function analyze(): Promise<void> {
   }
 }
 
-function buildUserContent(
+async function buildUserContent(
   messages: ReturnType<typeof getUnanalyzedMessages>,
-):
+): Promise<
   | string
   | Array<
       | { type: "text"; text: string }
       | { type: "image_url"; image_url: { url: string } }
-    > {
+    >
+> {
   const imageParts: Array<
     | { type: "text"; text: string }
     | { type: "image_url"; image_url: { url: string } }
@@ -227,24 +214,30 @@ function buildUserContent(
   for (const message of messages) {
     const author = message.author || "Неизвестный автор";
     const body = message.text || "[в сообщении есть изображение]";
-    const suffix = message.image_path ? ` [image ${imageIndex + 1}]` : "";
-    lines.push(`[${message.date} ${message.time}] ${author}: ${body}${suffix}`);
 
     if (message.image_path) {
       const absPath = path.join(STATE_DIR, message.image_path);
       if (fs.existsSync(absPath)) {
-        const file = fs.readFileSync(absPath);
-        const mimeType = getImageMimeType(message.image_path);
-        imageIndex += 1;
-        imageParts.push({
-          type: "image_url",
-          image_url: {
-            url: `data:${mimeType};base64,${file.toString("base64")}`,
-          },
-        });
+        try {
+          const prepared = await prepareImageForLlm(absPath, message.image_path);
+          imageIndex += 1;
+          lines.push(`[${message.date} ${message.time}] ${author}: ${body} [image ${imageIndex}]`);
+          imageParts.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${prepared.mimeType};base64,${prepared.data.toString("base64")}`,
+            },
+          });
+        } catch (error) {
+          lines.push(`[${message.date} ${message.time}] ${author}: ${body}`);
+          lines.push(`[image_unreadable ${message.image_path}: ${String(error)}]`);
+        }
       } else {
+        lines.push(`[${message.date} ${message.time}] ${author}: ${body}`);
         lines.push(`[image_missing ${message.image_path}]`);
       }
+    } else {
+      lines.push(`[${message.date} ${message.time}] ${author}: ${body}`);
     }
   }
 

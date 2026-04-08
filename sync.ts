@@ -188,20 +188,29 @@ async function fetchHistory(
     const block = item.locator(".block").first();
     if ((await block.count()) === 0) continue;
 
-    const author = await getTextContent(block.locator(".header .name .text").first());
-    const text = await getTextContent(block.locator(".bubble > span.text").first());
+    const author = await getTextContent(
+      block.locator(".header .name .text").first(),
+    );
+    const text = await getTextContent(
+      block.locator(".bubble > span.text").first(),
+    );
     const time = normalizeMessageTime(
       await getTextContent(block.locator(".meta .text").first()),
     );
-    const imagePath = await saveMessageImage(
-      chatId,
-      currentDate,
-      time,
-      author,
-      text,
-      item,
-      block,
-    );
+    let imagePath = null;
+    try {
+      imagePath = await saveMessageImage(
+        chatId,
+        currentDate,
+        time,
+        author,
+        text,
+        item,
+        block,
+      );
+    } catch (TimeoutError) {
+      console.error(`Timeout downloading image at ${currentDate}`);
+    }
     messages.push({
       date: currentDate,
       time,
@@ -269,7 +278,9 @@ async function saveMessageImage(
   const fileName = `${fileHash}.png`;
   const absPath = path.join(MESSAGE_MEDIA_DIR, fileName);
   const relPath = path.posix.join("message-media", fileName);
-  await image.scrollIntoViewIfNeeded();
+  try {
+    await image.scrollIntoViewIfNeeded();
+  } catch (e) {}
   await image.screenshot({ path: absPath });
   return relPath;
 }

@@ -1,13 +1,6 @@
 *
 !ANALYZE.md
-!analyze.ts
-!browser.ts
+!*.ts
 !bun.lock
-!db.ts
-!index.ts
-!login.ts
 !package.json
-!playwright.config.ts
-!runtime.ts
-!sync.ts
 !tsconfig.json

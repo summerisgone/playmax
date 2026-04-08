@@ -56,15 +56,31 @@ function extractAssistantMessageContent(content: unknown): unknown {
   throw new Error("LLM response is missing assistant content");
 }
 
-function formatEvents(
+export function formatEvents(
   chatName: string,
   events: LLMEvent[],
   chatUrl?: string,
 ): string {
-  const sorted = [...events].sort((a, b) => {
-    const order: Record<string, number> = { high: 0, medium: 1 };
-    return (order[a.urgency] ?? 2) - (order[b.urgency] ?? 2);
-  });
+  const urgencyOrder: Record<string, number> = { high: 0, medium: 1 };
+  const sorted = events
+    .map((event, index) => ({
+      event,
+      index,
+    }))
+    .sort((a, b) => {
+      const dateA = a.event.details.date;
+      const dateB = b.event.details.date;
+      if (dateA && dateB && dateA !== dateB) return dateA.localeCompare(dateB);
+      if (dateA && !dateB) return -1;
+      if (!dateA && dateB) return 1;
+
+      const urgencyDiff =
+        (urgencyOrder[a.event.urgency] ?? 2) - (urgencyOrder[b.event.urgency] ?? 2);
+      if (urgencyDiff !== 0) return urgencyDiff;
+
+      return a.index - b.index;
+    })
+    .map(({ event }) => event);
 
   const header = chatUrl
     ? `<b>\u{1F4CB} <a href="${esc(chatUrl)}">${esc(chatName)}</a></b>`

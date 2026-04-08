@@ -70,3 +70,20 @@ test("parseAnalyzeResponse rejects payloads that do not match schema", () => {
     }),
   ).toThrow(/does not match analyze schema/);
 });
+
+test("parseAnalyzeResponse rejects non-iso event dates", () => {
+  expect(() =>
+    parseAnalyzeResponse({
+      events: [
+        {
+          category: "event",
+          summary: "Экскурсия",
+          details: {
+            date: "10 апреля 2026",
+          },
+          urgency: "medium",
+        },
+      ],
+    }),
+  ).toThrow(/does not match analyze schema/);
+});

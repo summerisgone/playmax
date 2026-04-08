@@ -1,6 +1,13 @@
 import fs from "fs";
 import path from "path";
 import { Bot } from "grammy";
+import {
+  buildAnalyzeRequestBody,
+  parseAnalyzeResponse,
+  type AnalyzeResponse,
+  type AnalyzeUserContent,
+  type LLMEvent,
+} from "./analyze-schema";
 import { getUnanalyzedMessages, markAnalyzed, getChats } from "./db";
 import { prepareImageForLlm } from "./llm-images";
 import { STATE_DIR } from "./runtime";
@@ -27,15 +34,26 @@ function esc(text: string): string {
     (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!,
   );
 }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-interface LLMEvent {
-  category: string;
-  summary: string;
-  details: { amount?: string; date?: string; action_required?: string };
-  urgency: string;
-  source_quotes?: string[];
-  url?: string;
-  source?: string;
+function extractAssistantMessageContent(content: unknown): unknown {
+  if (typeof content === "string") return content;
+  if (isRecord(content)) return content;
+
+  if (Array.isArray(content)) {
+    const text = content
+      .flatMap((part) => {
+        if (!isRecord(part) || part.type !== "text") return [];
+        return typeof part.text === "string" ? [part.text] : [];
+      })
+      .join("")
+      .trim();
+    if (text) return text;
+  }
+
+  throw new Error("LLM response is missing assistant content");
 }
 
 function formatEvents(
@@ -86,44 +104,44 @@ export async function analyze(): Promise<void> {
   if (!BOT_TOKEN) throw new Error("BOT_TOKEN env var is required");
   if (!CHAT_ID) throw new Error("CHAT_ID env var is required");
 
+  const openaiApiBaseUrl = OPENAI_API_BASE_URL.replace(/\/$/, "");
+  const openaiApiKey = OPENAI_API_KEY;
+  const openaiApiModel = OPENAI_API_MODEL;
+  const botToken = BOT_TOKEN;
+  const targetChatId = CHAT_ID;
   const MIN_NEW_MESSAGES = +(process.env.MIN_NEW_MESSAGES ?? 3);
   const MAX_MESSAGES_TO_ANALYZE = 500;
   const systemPrompt = fs.readFileSync(
     path.join(process.cwd(), "ANALYZE.md"),
     "utf-8",
   );
-  const bot = new Bot(BOT_TOKEN);
+  const bot = new Bot(botToken);
 
-  async function callLLM(
-    userContent:
-      | string
-      | Array<
-          | { type: "text"; text: string }
-          | { type: "image_url"; image_url: { url: string } }
-        >,
-  ): Promise<string> {
-    const url = `${OPENAI_API_BASE_URL!.replace(/\/$/, "")}/chat/completions`;
+  async function callLLM(userContent: AnalyzeUserContent): Promise<AnalyzeResponse> {
+    const url = `${openaiApiBaseUrl}/chat/completions`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${openaiApiKey}`,
       },
-      body: JSON.stringify({
-        model: OPENAI_API_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userContent },
-        ],
-        temperature: 0.2,
-      }),
+      body: JSON.stringify(
+        buildAnalyzeRequestBody(systemPrompt, userContent, openaiApiModel),
+      ),
     });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`LLM API error ${res.status}: ${body}`);
     }
     const json = (await res.json()) as any;
-    return json.choices[0].message.content;
+    const message = json?.choices?.[0]?.message;
+    if (!message) {
+      throw new Error("LLM response does not contain choices[0].message");
+    }
+    if (typeof message.refusal === "string" && message.refusal.trim()) {
+      throw new Error(`LLM refused analyze request: ${message.refusal}`);
+    }
+    return parseAnalyzeResponse(extractAssistantMessageContent(message.content));
   }
 
   const allUnanalyzed = getUnanalyzedMessages();
@@ -168,17 +186,11 @@ export async function analyze(): Promise<void> {
     const userContent = await buildUserContent(limited);
 
     try {
-      const raw = await callLLM(userContent);
-
-      const jsonStr = raw
-        .replace(/^```json\s*/, "")
-        .replace(/\s*```$/, "")
-        .trim();
-      const parsed = JSON.parse(jsonStr) as { events: LLMEvent[] };
+      const parsed = await callLLM(userContent);
 
       if (parsed.events.length > 0) {
         const text = formatEvents(chatName, parsed.events, chatUrl);
-        const result = await bot.api.sendMessage(CHAT_ID, text, {
+        const result = await bot.api.sendMessage(targetChatId, text, {
           parse_mode: "HTML",
         });
         process.stderr.write(`Sent message_id: ${result.message_id}\n`);
@@ -197,13 +209,7 @@ export async function analyze(): Promise<void> {
 
 async function buildUserContent(
   messages: ReturnType<typeof getUnanalyzedMessages>,
-): Promise<
-  | string
-  | Array<
-      | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string } }
-    >
-> {
+): Promise<AnalyzeUserContent> {
   const imageParts: Array<
     | { type: "text"; text: string }
     | { type: "image_url"; image_url: { url: string } }

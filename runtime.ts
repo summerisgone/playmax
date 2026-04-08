@@ -33,7 +33,7 @@ function parseBool(value: string | undefined): boolean | undefined {
   return value === "1" || value.toLowerCase() === "true";
 }
 
-function getPreferredLocalChannel(): string | undefined {
+export function getPreferredBrowserChannel(): string | undefined {
   if (process.env.PLAYWRIGHT_IN_DOCKER === "1") return undefined;
   if (process.env.PLAYWRIGHT_BROWSER_CHANNEL) {
     return process.env.PLAYWRIGHT_BROWSER_CHANNEL;
@@ -44,11 +44,17 @@ function getPreferredLocalChannel(): string | undefined {
   return undefined;
 }
 
+export function describeBrowserTarget(channel?: string): string {
+  if (channel === "chrome") return "system Google Chrome";
+  if (channel) return `Playwright browser channel \"${channel}\"`;
+  return "Playwright bundled Chromium";
+}
+
 export function getPersistentContextOptions(
   overrides: LaunchPersistentContextOptions = {},
 ): LaunchPersistentContextOptions {
   const envHeadless = parseBool(process.env.PLAYWRIGHT_HEADLESS);
-  const envChannel = getPreferredLocalChannel();
+  const envChannel = getPreferredBrowserChannel();
   const headless = overrides.headless ?? envHeadless;
   const channel = overrides.channel ?? envChannel;
   const args = [...(overrides.args ?? [])];

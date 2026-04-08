@@ -46,47 +46,53 @@ const ANALYZE_RESPONSE_SCHEMA = {
       type: "array",
       items: {
         type: "object",
-        additionalProperties: false,
-        required: ["category", "summary", "details", "urgency"],
+        additionalProperties: true,
         properties: {
           category: {
-            type: "string",
-            enum: [...EVENT_CATEGORIES],
+            type: ["string", "null"],
           },
           summary: {
-            type: "string",
+            type: ["string", "null"],
           },
           details: {
-            type: "object",
-            additionalProperties: false,
+            type: ["object", "null"],
+            additionalProperties: true,
             properties: {
               amount: {
-                type: "string",
+                type: ["string", "number", "null"],
               },
               date: {
-                type: "string",
-                pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+                type: ["string", "number", "null"],
               },
               action_required: {
-                type: "string",
+                type: ["string", "null"],
               },
             },
           },
           urgency: {
-            type: "string",
-            enum: [...EVENT_URGENCIES],
+            type: ["string", "null"],
           },
           source_quotes: {
-            type: "array",
-            items: {
-              type: "string",
-            },
+            anyOf: [
+              {
+                type: "array",
+                items: {
+                  type: "string",
+                },
+              },
+              {
+                type: "string",
+              },
+              {
+                type: "null",
+              },
+            ],
           },
           url: {
-            type: "string",
+            type: ["string", "null"],
           },
           source: {
-            type: "string",
+            type: ["string", "null"],
           },
         },
       },
@@ -110,6 +116,78 @@ const ajv = new Ajv({
 
 const validateAnalyzeResponse = ajv.compile<AnalyzeResponse>(ANALYZE_RESPONSE_SCHEMA);
 
+const EVENT_CATEGORY_SET = new Set<string>(EVENT_CATEGORIES);
+const EVENT_URGENCY_SET = new Set<string>(EVENT_URGENCIES);
+const DEFAULT_CATEGORY: LLMEvent["category"] = "announcement";
+const DEFAULT_URGENCY: LLMEvent["urgency"] = "medium";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeLooseString(value: unknown): string | undefined {
+  if (typeof value === "number") return String(value);
+  return normalizeString(value);
+}
+
+function normalizeSourceQuotes(value: unknown): string[] | undefined {
+  if (typeof value === "string") {
+    const quote = value.trim();
+    return quote ? [quote] : undefined;
+  }
+
+  if (!Array.isArray(value)) return undefined;
+
+  const quotes = value
+    .map((item) => normalizeLooseString(item))
+    .filter((item): item is string => Boolean(item));
+
+  return quotes.length > 0 ? quotes : undefined;
+}
+
+function normalizeEvent(value: unknown): LLMEvent {
+  const event = isRecord(value) ? value : {};
+  const details = isRecord(event.details) ? event.details : {};
+  const rawCategory = normalizeString(event.category);
+  const rawUrgency = normalizeString(event.urgency);
+
+  return {
+    category: EVENT_CATEGORY_SET.has(rawCategory ?? "")
+      ? (rawCategory as LLMEvent["category"])
+      : DEFAULT_CATEGORY,
+    summary:
+      normalizeString(event.summary) ??
+      normalizeString(event.title) ??
+      normalizeString(event.text) ??
+      "Без краткого описания",
+    details: {
+      amount:
+        normalizeLooseString(details.amount) ??
+        normalizeLooseString(details.sum) ??
+        normalizeLooseString(details.price),
+      date: normalizeLooseString(details.date),
+      action_required:
+        normalizeString(details.action_required) ??
+        normalizeString(details.action) ??
+        normalizeString(details.todo),
+    },
+    urgency: EVENT_URGENCY_SET.has(rawUrgency ?? "")
+      ? (rawUrgency as LLMEvent["urgency"])
+      : DEFAULT_URGENCY,
+    source_quotes:
+      normalizeSourceQuotes(event.source_quotes) ??
+      normalizeSourceQuotes(event.source_quote),
+    url: normalizeString(event.url),
+    source: normalizeString(event.source),
+  };
+}
+
 export function parseAnalyzeResponse(raw: unknown): AnalyzeResponse {
   const value = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (!validateAnalyzeResponse(value)) {
@@ -119,7 +197,9 @@ export function parseAnalyzeResponse(raw: unknown): AnalyzeResponse {
     throw new Error(`LLM response does not match analyze schema: ${details}`);
   }
 
-  return value;
+  return {
+    events: value.events.map((event) => normalizeEvent(event)),
+  };
 }
 
 export function buildAnalyzeRequestBody(

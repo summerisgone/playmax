@@ -56,34 +56,42 @@ test("parseAnalyzeResponse validates and keeps structured events", () => {
   });
 });
 
-test("parseAnalyzeResponse rejects payloads that do not match schema", () => {
-  expect(() =>
-    parseAnalyzeResponse({
-      events: [
-        {
-          category: "unknown",
-          summary: "Что-то произошло",
-          details: {},
-          urgency: "high",
+test("parseAnalyzeResponse tolerates sparse and extended events", () => {
+  const parsed = parseAnalyzeResponse({
+    events: [
+      {
+        title: "Экскурсия",
+        details: {
+          date: "10 апреля 2026",
+          place: "музей",
         },
-      ],
-    }),
-  ).toThrow(/does not match analyze schema/);
+        source_quotes: "Собираемся в музей в субботу",
+        extra_field: true,
+      },
+    ],
+  });
+
+  expect(parsed.events).toEqual([
+    {
+      category: "announcement",
+      summary: "Экскурсия",
+      details: {
+        amount: undefined,
+        date: "10 апреля 2026",
+        action_required: undefined,
+      },
+      urgency: "medium",
+      source_quotes: ["Собираемся в музей в субботу"],
+      url: undefined,
+      source: undefined,
+    },
+  ]);
 });
 
-test("parseAnalyzeResponse rejects non-iso event dates", () => {
+test("parseAnalyzeResponse still rejects payloads with invalid top-level shape", () => {
   expect(() =>
     parseAnalyzeResponse({
-      events: [
-        {
-          category: "event",
-          summary: "Экскурсия",
-          details: {
-            date: "10 апреля 2026",
-          },
-          urgency: "medium",
-        },
-      ],
+      result: [],
     }),
   ).toThrow(/does not match analyze schema/);
 });

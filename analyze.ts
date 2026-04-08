@@ -27,6 +27,7 @@ const urgencyIcon: Record<string, string> = {
   high: "\u{1F534}",
   medium: "\u{1F7E1}",
 };
+const MIN_FALLBACK_CHUNK_MESSAGES = 8;
 
 function esc(text: string): string {
   return text.replace(
@@ -56,13 +57,10 @@ function extractAssistantMessageContent(content: unknown): unknown {
   throw new Error("LLM response is missing assistant content");
 }
 
-export function formatEvents(
-  chatName: string,
-  events: LLMEvent[],
-  chatUrl?: string,
-): string {
+function sortEvents(events: LLMEvent[]): LLMEvent[] {
   const urgencyOrder: Record<string, number> = { high: 0, medium: 1 };
-  const sorted = events
+
+  return events
     .map((event, index) => ({
       event,
       index,
@@ -81,26 +79,94 @@ export function formatEvents(
       return a.index - b.index;
     })
     .map(({ event }) => event);
+}
 
+export function formatEvents(
+  chatName: string,
+  events: LLMEvent[],
+  chatUrl?: string,
+): string {
+  const sorted = sortEvents(events);
   const header = chatUrl
     ? `<b>\u{1F4CB} <a href="${esc(chatUrl)}">${esc(chatName)}</a></b>`
     : `<b>\u{1F4CB} ${esc(chatName)}</b>`;
   const lines: string[] = [`${header}\n`];
 
   for (const ev of sorted) {
-    const cat = categoryIcon[ev.category] ?? "\u{2022}";
+    const cat = ev.emoji ?? categoryIcon[ev.category] ?? "\u{2022}";
     const urg = urgencyIcon[ev.urgency] ?? "";
     lines.push(`${urg} ${cat} <b>${esc(ev.summary)}</b>`);
     if (ev.details.date) lines.push(`  \u{1F4C6} ${esc(ev.details.date)}`);
     if (ev.details.amount) lines.push(`  \u{1F4B5} ${esc(ev.details.amount)}`);
     if (ev.details.action_required)
       lines.push(`  \u{2705} <i>${esc(ev.details.action_required)}</i>`);
+    if (ev.source_quotes?.[0]) lines.push(`  \u{1F4AC} ${esc(ev.source_quotes[0])}`);
     if (ev.url && ev.source)
       lines.push(`  \u{1F517} <a href="${esc(ev.url)}">${esc(ev.source)}</a>`);
     lines.push("");
   }
 
   return lines.join("\n").trim();
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableLlmError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+
+  return (
+    message.includes("TimeoutError") ||
+    message.includes("timed out") ||
+    message.includes("LLM API error 408") ||
+    message.includes("LLM API error 429") ||
+    message.includes("LLM API error 500") ||
+    message.includes("LLM API error 502") ||
+    message.includes("LLM API error 503") ||
+    message.includes("LLM API error 504")
+  );
+}
+
+function chunkMessages<T>(messages: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+
+  for (let start = 0; start < messages.length; start += chunkSize) {
+    chunks.push(messages.slice(start, start + chunkSize));
+  }
+
+  return chunks;
+}
+
+function dedupeEvents(events: LLMEvent[]): LLMEvent[] {
+  const seen = new Set<string>();
+  const unique: LLMEvent[] = [];
+
+  for (const event of events) {
+    const key = [
+      event.category,
+      event.summary,
+      event.details.date ?? "",
+      event.details.amount ?? "",
+      event.details.action_required ?? "",
+    ].join("|");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(event);
+  }
+
+  return unique;
+}
+
+function truncateForPrompt(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function normalizePromptText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 // --- Main ---
@@ -123,28 +189,47 @@ export async function analyze(): Promise<void> {
   const openaiApiBaseUrl = OPENAI_API_BASE_URL.replace(/\/$/, "");
   const openaiApiKey = OPENAI_API_KEY;
   const openaiApiModel = OPENAI_API_MODEL;
-  const botToken = BOT_TOKEN;
-  const targetChatId = CHAT_ID;
+  const LLM_TIMEOUT_MS = +(process.env.LLM_TIMEOUT_MS ?? 90_000);
+  const LLM_RETRY_ATTEMPTS = +(process.env.LLM_RETRY_ATTEMPTS ?? 3);
   const MIN_NEW_MESSAGES = +(process.env.MIN_NEW_MESSAGES ?? 3);
   const MAX_MESSAGES_TO_ANALYZE = 500;
   const systemPrompt = fs.readFileSync(
     path.join(process.cwd(), "ANALYZE.md"),
     "utf-8",
   );
+  const botToken = BOT_TOKEN;
+  const targetChatId = CHAT_ID;
   const bot = new Bot(botToken);
 
-  async function callLLM(userContent: AnalyzeUserContent): Promise<AnalyzeResponse> {
+  async function callLLMOnce(
+    userContent: AnalyzeUserContent,
+  ): Promise<AnalyzeResponse> {
     const url = `${openaiApiBaseUrl}/chat/completions`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify(
-        buildAnalyzeRequestBody(systemPrompt, userContent, openaiApiModel),
-      ),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    let res: Response;
+
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiApiKey}`,
+        },
+        body: JSON.stringify(
+          buildAnalyzeRequestBody(systemPrompt, userContent, openaiApiModel),
+        ),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`TimeoutError: LLM request timed out after ${LLM_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`LLM API error ${res.status}: ${body}`);
@@ -158,6 +243,61 @@ export async function analyze(): Promise<void> {
       throw new Error(`LLM refused analyze request: ${message.refusal}`);
     }
     return parseAnalyzeResponse(extractAssistantMessageContent(message.content));
+  }
+
+  async function callLLM(userContent: AnalyzeUserContent): Promise<AnalyzeResponse> {
+    const attempts = Math.max(1, LLM_RETRY_ATTEMPTS);
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await callLLMOnce(userContent);
+      } catch (error) {
+        if (!isRetryableLlmError(error) || attempt === attempts) throw error;
+
+        const waitMs = attempt * 2000;
+        process.stderr.write(
+          `LLM attempt ${attempt}/${attempts} failed: ${String(error)}. Retrying in ${waitMs}ms...\n`,
+        );
+        await sleepMs(waitMs);
+      }
+    }
+
+    throw new Error("LLM retry loop exited unexpectedly");
+  }
+
+  async function analyzeMessagesWithFallback(
+    chatId: string,
+    messages: ReturnType<typeof getUnanalyzedMessages>,
+    depth = 0,
+  ): Promise<AnalyzeResponse> {
+    const userContent = await buildUserContent(messages);
+
+    try {
+      return await callLLM(userContent);
+    } catch (error) {
+      if (!isRetryableLlmError(error) || messages.length <= MIN_FALLBACK_CHUNK_MESSAGES) {
+        throw error;
+      }
+
+      const splitSize = Math.ceil(messages.length / 2);
+      const chunks = chunkMessages(messages, splitSize);
+      process.stderr.write(
+        `Falling back to chunked analysis for ${chatId}: ${chunks.length} chunks of up to ${splitSize} messages (depth ${depth + 1}).\n`,
+      );
+
+      const allEvents: LLMEvent[] = [];
+      for (const [index, chunk] of chunks.entries()) {
+        process.stderr.write(
+          `Analyzing chunk ${index + 1}/${chunks.length} for ${chatId} (${chunk.length} messages, depth ${depth + 1})...\n`,
+        );
+        const chunkResult = await analyzeMessagesWithFallback(chatId, chunk, depth + 1);
+        allEvents.push(...chunkResult.events);
+      }
+
+      return {
+        events: dedupeEvents(allEvents),
+      };
+    }
   }
 
   const allUnanalyzed = getUnanalyzedMessages();
@@ -199,10 +339,8 @@ export async function analyze(): Promise<void> {
       `Analyzing ${chatId} (${chatName}): ${limited.length}/${messages.length} new messages...\n`,
     );
 
-    const userContent = await buildUserContent(limited);
-
     try {
-      const parsed = await callLLM(userContent);
+      const parsed = await analyzeMessagesWithFallback(chatId, limited);
 
       if (parsed.events.length > 0) {
         const text = formatEvents(chatName, parsed.events, chatUrl);
@@ -235,7 +373,9 @@ async function buildUserContent(
 
   for (const message of messages) {
     const author = message.author || "Неизвестный автор";
-    const body = message.text || "[в сообщении есть изображение]";
+    const body = message.text
+      ? truncateForPrompt(normalizePromptText(message.text), 350)
+      : "[в сообщении есть изображение]";
 
     if (message.image_path) {
       const absPath = path.join(STATE_DIR, message.image_path);

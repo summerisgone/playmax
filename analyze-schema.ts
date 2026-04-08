@@ -15,6 +15,7 @@ export const EVENT_URGENCIES = ["high", "medium", "low"] as const;
 export interface LLMEvent {
   category: (typeof EVENT_CATEGORIES)[number];
   summary: string;
+  emoji?: string;
   details: {
     amount?: string;
     date?: string;
@@ -52,6 +53,9 @@ const ANALYZE_RESPONSE_SCHEMA = {
             type: ["string", "null"],
           },
           summary: {
+            type: ["string", "null"],
+          },
+          emoji: {
             type: ["string", "null"],
           },
           details: {
@@ -120,6 +124,17 @@ const EVENT_CATEGORY_SET = new Set<string>(EVENT_CATEGORIES);
 const EVENT_URGENCY_SET = new Set<string>(EVENT_URGENCIES);
 const DEFAULT_CATEGORY: LLMEvent["category"] = "announcement";
 const DEFAULT_URGENCY: LLMEvent["urgency"] = "medium";
+const SUMMARY_PLACEHOLDERS = new Set([
+  "без краткого описания",
+  "без описания",
+  "нет описания",
+  "нет краткого описания",
+  "не указано",
+  "n/a",
+  "na",
+  "null",
+  "none",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -127,7 +142,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
+  const trimmed = value.replace(/\s+/g, " ").trim();
   return trimmed ? trimmed : undefined;
 }
 
@@ -151,38 +166,99 @@ function normalizeSourceQuotes(value: unknown): string[] | undefined {
   return quotes.length > 0 ? quotes : undefined;
 }
 
-function normalizeEvent(value: unknown): LLMEvent {
+function truncateText(value: string, maxLength = 120): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function normalizeSummaryCandidate(value: unknown): string | undefined {
+  const normalized = normalizeLooseString(value);
+  if (!normalized) return undefined;
+
+  const summary = truncateText(normalized);
+  if (summary.length < 4) return undefined;
+  if (SUMMARY_PLACEHOLDERS.has(summary.toLowerCase())) return undefined;
+
+  return summary;
+}
+
+function extractEventCandidates(value: unknown): unknown[] | undefined {
+  if (Array.isArray(value)) return value;
+  if (!isRecord(value)) return undefined;
+
+  for (const key of ["events", "items", "result"]) {
+    const candidate = value[key];
+    if (Array.isArray(candidate)) return candidate;
+  }
+
+  if (isRecord(value.data)) {
+    const nested = extractEventCandidates(value.data);
+    if (nested) return nested;
+  }
+
+  if (isRecord(value.event)) {
+    return [value.event];
+  }
+
+  return undefined;
+}
+
+function normalizeEvent(value: unknown): LLMEvent | undefined {
   const event = isRecord(value) ? value : {};
   const details = isRecord(event.details) ? event.details : {};
   const rawCategory = normalizeString(event.category);
   const rawUrgency = normalizeString(event.urgency);
+  const sourceQuotes =
+    normalizeSourceQuotes(event.source_quotes) ??
+    normalizeSourceQuotes(event.source_quote);
+  const category = EVENT_CATEGORY_SET.has(rawCategory ?? "")
+    ? (rawCategory as LLMEvent["category"])
+    : DEFAULT_CATEGORY;
+  const amount =
+    normalizeLooseString(details.amount) ??
+    normalizeLooseString(details.sum) ??
+    normalizeLooseString(details.price);
+  const date = normalizeLooseString(details.date);
+  const actionRequired =
+    normalizeString(details.action_required) ??
+    normalizeString(details.action) ??
+    normalizeString(details.todo);
+  const summary =
+    normalizeSummaryCandidate(event.summary) ??
+    normalizeSummaryCandidate(event.title) ??
+    normalizeSummaryCandidate(event.text) ??
+    normalizeSummaryCandidate(event.description) ??
+    normalizeSummaryCandidate(event.name) ??
+    normalizeSummaryCandidate(event.subject) ??
+    normalizeSummaryCandidate(event.headline) ??
+    normalizeSummaryCandidate(event.what) ??
+    normalizeSummaryCandidate(details.summary) ??
+    normalizeSummaryCandidate(details.title) ??
+    normalizeSummaryCandidate(details.subject) ??
+    normalizeSummaryCandidate(actionRequired) ??
+    normalizeSummaryCandidate(sourceQuotes?.[0]) ??
+    (category === "money" && amount
+      ? normalizeSummaryCandidate(`Сбор ${amount}`)
+      : undefined) ??
+    (category === "deadline" && date
+      ? normalizeSummaryCandidate(`Дедлайн до ${date}`)
+      : undefined);
+
+  if (!summary) return undefined;
 
   return {
-    category: EVENT_CATEGORY_SET.has(rawCategory ?? "")
-      ? (rawCategory as LLMEvent["category"])
-      : DEFAULT_CATEGORY,
-    summary:
-      normalizeString(event.summary) ??
-      normalizeString(event.title) ??
-      normalizeString(event.text) ??
-      "Без краткого описания",
+    category,
+    summary,
+    emoji: normalizeString(event.emoji),
     details: {
-      amount:
-        normalizeLooseString(details.amount) ??
-        normalizeLooseString(details.sum) ??
-        normalizeLooseString(details.price),
-      date: normalizeLooseString(details.date),
-      action_required:
-        normalizeString(details.action_required) ??
-        normalizeString(details.action) ??
-        normalizeString(details.todo),
+      amount,
+      date,
+      action_required: actionRequired,
     },
     urgency: EVENT_URGENCY_SET.has(rawUrgency ?? "")
       ? (rawUrgency as LLMEvent["urgency"])
       : DEFAULT_URGENCY,
-    source_quotes:
-      normalizeSourceQuotes(event.source_quotes) ??
-      normalizeSourceQuotes(event.source_quote),
+    source_quotes: sourceQuotes,
     url: normalizeString(event.url),
     source: normalizeString(event.source),
   };
@@ -190,7 +266,19 @@ function normalizeEvent(value: unknown): LLMEvent {
 
 export function parseAnalyzeResponse(raw: unknown): AnalyzeResponse {
   const value = typeof raw === "string" ? JSON.parse(raw) : raw;
-  if (!validateAnalyzeResponse(value)) {
+  const candidates = extractEventCandidates(value);
+  const schemaCandidate = Array.isArray(candidates) ? { events: candidates } : value;
+  const normalizedFromCandidates = Array.isArray(candidates)
+    ? candidates
+        .map((event) => normalizeEvent(event))
+        .filter((event): event is LLMEvent => Boolean(event))
+    : [];
+
+  if (!validateAnalyzeResponse(schemaCandidate)) {
+    if (Array.isArray(candidates)) {
+      return { events: normalizedFromCandidates };
+    }
+
     const details = ajv.errorsText(validateAnalyzeResponse.errors, {
       separator: "; ",
     });
@@ -198,7 +286,9 @@ export function parseAnalyzeResponse(raw: unknown): AnalyzeResponse {
   }
 
   return {
-    events: value.events.map((event) => normalizeEvent(event)),
+    events: schemaCandidate.events
+      .map((event: unknown) => normalizeEvent(event))
+      .filter((event: LLMEvent | undefined): event is LLMEvent => Boolean(event)),
   };
 }
 
